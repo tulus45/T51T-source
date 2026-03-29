@@ -1,0 +1,64 @@
+﻿@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  * {
+    @apply border-slate-200;
+  }
+
+  body {
+    @apply min-h-screen bg-slate-100 font-sans text-slate-900 antialiased;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    @apply outline-none;
+  }
+}
+
+@layer components {
+  .surface {
+    @apply rounded-3xl border border-white/60 bg-white/95 shadow-soft backdrop-blur;
+  }
+
+  .surface-muted {
+    @apply rounded-3xl border border-slate-200 bg-slate-50;
+  }
+
+  .input {
+    @apply w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-4 focus:ring-brand-100;
+  }
+
+  .label {
+    @apply mb-2 block text-sm font-semibold text-slate-700;
+  }
+
+  .table-shell {
+    @apply overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-soft;
+  }
+
+  .table-base {
+    @apply min-w-full divide-y divide-slate-200 text-sm;
+  }
+
+  .table-base thead {
+    @apply bg-slate-50;
+  }
+
+  .table-base th {
+    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500;
+  }
+
+  .table-base td {
+    @apply px-4 py-4 align-top text-slate-700;
+  }
+}
