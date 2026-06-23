@@ -1,3 +1,4 @@
+import { Eye, EyeOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import AuthLayout from '../layouts/AuthLayout';
@@ -16,6 +17,7 @@ function LoginPage() {
     email: '',
     password: '',
   });
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const targetPath = location.state?.from?.pathname || '/dashboard';
 
@@ -67,7 +69,27 @@ function LoginPage() {
 
               <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
                 <Input label="Email" name="email" onChange={handleChange} required type="email" value={form.email} />
-                <Input label="Password" name="password" onChange={handleChange} required type="password" value={form.password} />
+                <label className="block">
+                  <span className="label">Password</span>
+                  <div className="relative">
+                    <input
+                      className="input pr-12"
+                      name="password"
+                      onChange={handleChange}
+                      required
+                      type={isPasswordVisible ? 'text' : 'password'}
+                      value={form.password}
+                    />
+                    <button
+                      aria-label={isPasswordVisible ? 'Sembunyikan password' : 'Tampilkan password'}
+                      className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-slate-400 transition hover:text-slate-600"
+                      onClick={() => setIsPasswordVisible((current) => !current)}
+                      type="button"
+                    >
+                      {isPasswordVisible ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                    </button>
+                  </div>
+                </label>
                 <Button className="w-full" disabled={submitting} size="lg" type="submit" variant="brand">
                   {submitting ? 'Memproses...' : 'Login'}
                 </Button>
@@ -75,7 +97,7 @@ function LoginPage() {
             </div>
 
             <div className="flex min-h-[240px] items-center justify-center border-t border-slate-200 px-2 py-4 lg:min-h-[360px] lg:border-l lg:border-t-0 lg:px-2 lg:py-4">
-              <img alt="Putri" className="h-[220px] w-[220px] object-contain object-center sm:h-[240px] sm:w-[240px] lg:h-[260px] lg:w-[260px]" src="/Putri.png" />
+              <img alt="Putri" className="h-[220px] w-[220px] object-contain object-center sm:h-[240px] sm:w-[240px] lg:h-[260px] lg:w-[260px]" src={`${import.meta.env.BASE_URL}Putri.png`} />
             </div>
           </div>
         </div>
@@ -89,4 +111,5 @@ function LoginPage() {
 }
 
 export default LoginPage;
+
 

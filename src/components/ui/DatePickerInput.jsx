@@ -22,6 +22,10 @@ function getMonthStart(date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
+function getMonthEnd(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
 function formatDateValue(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -58,6 +62,50 @@ function isSameDate(left, right) {
   );
 }
 
+function isDateBefore(left, right) {
+  return left.getTime() < right.getTime();
+}
+
+function isDateAfter(left, right) {
+  return left.getTime() > right.getTime();
+}
+
+function isDateDisabled(date, minDate, maxDate) {
+  if (minDate && isDateBefore(date, minDate)) {
+    return true;
+  }
+
+  if (maxDate && isDateAfter(date, maxDate)) {
+    return true;
+  }
+
+  return false;
+}
+
+function canShiftMonth(displayMonth, offset, minDate, maxDate) {
+  const nextMonth = new Date(displayMonth.getFullYear(), displayMonth.getMonth() + offset, 1);
+  const nextMonthStart = getMonthStart(nextMonth);
+  const nextMonthEnd = getMonthEnd(nextMonth);
+
+  if (minDate && isDateBefore(nextMonthEnd, minDate)) {
+    return false;
+  }
+
+  if (maxDate && isDateAfter(nextMonthStart, maxDate)) {
+    return false;
+  }
+
+  return true;
+}
+
+function getInitialDisplayDate(selectedDate, minDate, maxDate) {
+  if (selectedDate && !isDateDisabled(selectedDate, minDate, maxDate)) {
+    return selectedDate;
+  }
+
+  return minDate || maxDate || new Date();
+}
+
 function getCalendarDays(monthDate) {
   const monthStart = getMonthStart(monthDate);
   const calendarStart = new Date(monthStart);
@@ -76,16 +124,20 @@ function getCalendarDays(monthDate) {
   });
 }
 
-function DatePickerInput({ label, name, value, onChange, error, className = '', disabled = false }) {
+function DatePickerInput({ label, name, value, onChange, error, className = '', disabled = false, minDate = '', maxDate = '' }) {
   const rootRef = useRef(null);
   const selectedDate = parseDateValue(value);
+  const minSelectableDate = parseDateValue(minDate);
+  const maxSelectableDate = parseDateValue(maxDate);
   const displayValue = formatDisplayValue(value);
   const [isOpen, setIsOpen] = useState(false);
-  const [displayMonth, setDisplayMonth] = useState(() => getMonthStart(selectedDate || new Date()));
+  const [displayMonth, setDisplayMonth] = useState(() =>
+    getMonthStart(getInitialDisplayDate(selectedDate, minSelectableDate, maxSelectableDate)),
+  );
 
   useEffect(() => {
-    setDisplayMonth(getMonthStart(selectedDate || new Date()));
-  }, [value]);
+    setDisplayMonth(getMonthStart(getInitialDisplayDate(selectedDate, minSelectableDate, maxSelectableDate)));
+  }, [maxDate, minDate, value]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -114,6 +166,8 @@ function DatePickerInput({ label, name, value, onChange, error, className = '', 
   }, [isOpen]);
 
   const calendarDays = useMemo(() => getCalendarDays(displayMonth), [displayMonth]);
+  const canGoToPreviousMonth = canShiftMonth(displayMonth, -1, minSelectableDate, maxSelectableDate);
+  const canGoToNextMonth = canShiftMonth(displayMonth, 1, minSelectableDate, maxSelectableDate);
   const today = new Date();
 
   function emitValue(nextValue) {
@@ -127,12 +181,21 @@ function DatePickerInput({ label, name, value, onChange, error, className = '', 
 
   function handleSelectDate(nextValue) {
     const nextDate = parseDateValue(nextValue);
-    setDisplayMonth(getMonthStart(nextDate || new Date()));
+
+    if (!nextDate || isDateDisabled(nextDate, minSelectableDate, maxSelectableDate)) {
+      return;
+    }
+
+    setDisplayMonth(getMonthStart(nextDate));
     emitValue(nextValue);
     setIsOpen(false);
   }
 
   function handleMonthShift(offset) {
+    if (!canShiftMonth(displayMonth, offset, minSelectableDate, maxSelectableDate)) {
+      return;
+    }
+
     setDisplayMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
   }
 
@@ -183,7 +246,11 @@ function DatePickerInput({ label, name, value, onChange, error, className = '', 
           <div className="absolute left-0 top-full z-[90] mt-2 w-[320px] rounded-3xl border border-slate-200 bg-white p-4 shadow-soft">
             <div className="mb-4 flex items-center justify-between gap-3">
               <button
-                className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
+                className={cn(
+                  "inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition",
+                  canGoToPreviousMonth ? "hover:bg-slate-50" : "cursor-not-allowed opacity-40",
+                )}
+                disabled={!canGoToPreviousMonth}
                 onClick={() => handleMonthShift(-1)}
                 title="Bulan sebelumnya"
                 type="button"
@@ -192,7 +259,11 @@ function DatePickerInput({ label, name, value, onChange, error, className = '', 
               </button>
               <p className="text-sm font-semibold capitalize text-slate-900">{formatMonthLabel(displayMonth)}</p>
               <button
-                className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
+                className={cn(
+                  "inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition",
+                  canGoToNextMonth ? "hover:bg-slate-50" : "cursor-not-allowed opacity-40",
+                )}
+                disabled={!canGoToNextMonth}
                 onClick={() => handleMonthShift(1)}
                 title="Bulan berikutnya"
                 type="button"
@@ -213,15 +284,18 @@ function DatePickerInput({ label, name, value, onChange, error, className = '', 
               {calendarDays.map((day) => {
                 const isSelected = selectedDate ? isSameDate(day.date, selectedDate) : false;
                 const isToday = isSameDate(day.date, today);
+                const isUnavailable = isDateDisabled(day.date, minSelectableDate, maxSelectableDate);
 
                 return (
                   <button
                     className={cn(
-                      'inline-flex h-10 items-center justify-center rounded-2xl text-sm font-medium transition',
-                      day.isCurrentMonth ? 'text-slate-700 hover:bg-slate-100' : 'text-slate-300 hover:bg-slate-50',
-                      isToday && !isSelected ? 'border border-brand-200 bg-brand-50 text-brand-700' : '',
-                      isSelected ? 'bg-brand-600 text-white hover:bg-brand-700' : '',
+                      "inline-flex h-10 items-center justify-center rounded-2xl text-sm font-medium transition",
+                      day.isCurrentMonth ? "text-slate-700 hover:bg-slate-100" : "text-slate-300 hover:bg-slate-50",
+                      isToday && !isSelected ? "border border-brand-200 bg-brand-50 text-brand-700" : "",
+                      isSelected ? "bg-brand-600 text-white hover:bg-brand-700" : "",
+                      isUnavailable ? "cursor-not-allowed text-slate-200 hover:bg-transparent" : "",
                     )}
+                    disabled={isUnavailable}
                     key={day.value}
                     onClick={() => handleSelectDate(day.value)}
                     type="button"

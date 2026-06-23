@@ -1,41 +1,49 @@
-﻿import { supabase } from '../lib/supabaseClient';
-import { unwrapResponse } from './baseService';
+﻿import {
+  clearStoredAuthSession,
+  getStoredAuthSession,
+  setStoredAuthSession,
+} from '../lib/supabaseClient';
+import { requestJson } from './baseService';
 
 export async function loginWithPassword({ email, password }) {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
+  const data = await requestJson('/api/auth/login', {
+    body: {
+      email,
+      password,
+    },
+    includeAuth: false,
+    method: 'POST',
   });
-
-  unwrapResponse(error, 'Login gagal.');
-
+  setStoredAuthSession(data);
   return data;
 }
 
 export async function logoutSession() {
-  const { error } = await supabase.auth.signOut();
-  unwrapResponse(error, 'Logout gagal.');
+  try {
+    if (getStoredAuthSession()?.session?.token) {
+      await requestJson('/api/auth/logout', {
+        method: 'POST',
+      });
+    }
+  } finally {
+    clearStoredAuthSession();
+  }
 }
 
 export async function getCurrentSession() {
-  const {
-    data: { session },
-    error,
-  } = await supabase.auth.getSession();
+  if (!getStoredAuthSession()?.session?.token) {
+    return null;
+  }
 
-  unwrapResponse(error, 'Gagal mengambil session.');
+  const data = await requestJson('/api/auth/session', {
+    method: 'GET',
+  });
 
-  return session;
-}
+  if (!data?.session?.token || !data?.user || !data?.profile) {
+    clearStoredAuthSession();
+    return null;
+  }
 
-export async function getProfileByUserId(userId) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .single();
-
-  unwrapResponse(error, 'Profile user tidak ditemukan.');
-
+  setStoredAuthSession(data);
   return data;
 }

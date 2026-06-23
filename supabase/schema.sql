@@ -573,9 +573,11 @@ declare
   v_spd numeric(14,2) := 0;
   v_spd_lm numeric(14,2) := 0;
   v_spd_delta numeric(14,2) := 0;
-  v_current_receipt_count integer := 0;
-  v_previous_receipt_count integer := 0;
-  v_receipt_delta integer := 0;
+  v_current_receipt_count numeric(14,2) := 0;
+  v_previous_receipt_count numeric(14,2) := 0;
+  v_receipt_delta numeric(14,2) := 0;
+  v_latest_input_day integer := 0;
+  v_previous_comparable_day integer := 0;
   v_current_apc numeric(14,2) := 0;
   v_previous_apc numeric(14,2) := 0;
   v_apc_delta numeric(14,2) := 0;
@@ -615,7 +617,7 @@ declare
   v_receipt_share numeric(14,6) := 0;
   v_apc_share numeric(14,6) := 0;
   v_dominant_driver text := 'mixed';
-  v_headline text := 'Projection belum bisa dianalisa.';
+  v_headline text := 'Analisis hutang sales belum tersedia.';
   v_driver_label text := 'Driver belum terbaca';
   v_analysis_points text[] := array[]::text[];
   v_recommendation_points text[] := array[]::text[];
@@ -775,33 +777,8 @@ begin
       v_previous_month_start + ((least(extract(day from v_latest_sales_date)::int, extract(day from v_previous_month_end)::int) - 1) * interval '1 day')
     )::date;
     v_day_count_in_month := extract(day from (date_trunc('month', v_latest_sales_date::timestamp) + interval '1 month - 1 day'))::int;
-
-    select
-      coalesce(max(sales_amount), 0),
-      coalesce(max(receipt_count), 0)::int
-    into v_spd, v_current_receipt_count
-    from public.sales_daily_reports
-    where date = v_latest_sales_date;
-
-    select
-      coalesce(max(sales_amount), 0),
-      coalesce(max(receipt_count), 0)::int
-    into v_spd_lm, v_previous_receipt_count
-    from public.sales_daily_reports
-    where date = v_comparable_previous_date;
-
-    v_spd_delta := v_spd - v_spd_lm;
-    v_receipt_delta := v_current_receipt_count - v_previous_receipt_count;
-
-    if v_current_receipt_count > 0 then
-      v_current_apc := round((v_spd / v_current_receipt_count)::numeric, 2);
-    end if;
-
-    if v_previous_receipt_count > 0 then
-      v_previous_apc := round((v_spd_lm / v_previous_receipt_count)::numeric, 2);
-    end if;
-
-    v_apc_delta := v_current_apc - v_previous_apc;
+    v_latest_input_day := extract(day from v_latest_sales_date)::int;
+    v_previous_comparable_day := extract(day from v_comparable_previous_date)::int;
 
     select
       coalesce(sum(sales_amount), 0),
@@ -825,9 +802,25 @@ begin
       v_previous_mtd_apc := round((v_previous_mtd_sales / v_previous_mtd_receipts)::numeric, 2);
     end if;
 
-    v_sales_value := v_spd_delta * v_day_count_in_month;
-    v_receipt_value := v_receipt_delta * v_current_apc * v_day_count_in_month;
-    v_apc_value := v_apc_delta * v_current_receipt_count * v_day_count_in_month;
+    if v_latest_input_day > 0 then
+      v_spd := round((v_current_mtd_sales / v_latest_input_day)::numeric, 2);
+      v_current_receipt_count := round((v_current_mtd_receipts::numeric / v_latest_input_day)::numeric, 2);
+    end if;
+
+    if v_previous_comparable_day > 0 then
+      v_spd_lm := round((v_previous_mtd_sales / v_previous_comparable_day)::numeric, 2);
+      v_previous_receipt_count := round((v_previous_mtd_receipts::numeric / v_previous_comparable_day)::numeric, 2);
+    end if;
+
+    v_spd_delta := v_spd - v_spd_lm;
+    v_receipt_delta := v_current_receipt_count - v_previous_receipt_count;
+    v_current_apc := v_current_mtd_apc;
+    v_previous_apc := v_previous_mtd_apc;
+    v_apc_delta := v_current_apc - v_previous_apc;
+
+    v_sales_value := (v_spd_lm - v_spd) * v_latest_input_day;
+    v_receipt_value := (v_previous_receipt_count - v_current_receipt_count) * v_current_apc * v_latest_input_day;
+    v_apc_value := (v_previous_apc - v_current_apc) * v_current_receipt_count * v_latest_input_day;
 
     v_sales_projection := jsonb_build_object(
       'latestInputDate',
@@ -941,154 +934,154 @@ begin
 
     if v_sales_direction = 'neutral' then
       if v_receipt_direction <> 'neutral' and v_apc_direction <> 'neutral' and v_receipt_direction <> v_apc_direction then
-        v_headline := 'Sales Projection relatif netral karena dampak struk dan APC saling menutup.';
+        v_headline := 'Hutang sales relatif netral karena dampak STD dan APC saling menutup.';
         v_driver_label := 'Driver saling menutup';
       else
-        v_headline := 'Sales Projection relatif stabil karena belum ada perubahan material pada driver utama.';
+        v_headline := 'Hutang sales relatif stabil karena belum ada perubahan material pada driver utama.';
         v_driver_label := 'Pergerakan stabil';
       end if;
     elsif v_sales_direction = 'positive' then
       if v_receipt_direction = 'positive' and v_apc_direction = 'positive' then
         if v_dominant_driver = 'receipt' then
-          v_headline := 'Sales Projection positif terutama ditopang kenaikan jumlah struk.';
-          v_driver_label := 'Driver utama: Struk';
+          v_headline := 'Hutang sales terutama dipicu penurunan STD.';
+          v_driver_label := 'Driver utama: STD';
         elsif v_dominant_driver = 'apc' then
-          v_headline := 'Sales Projection positif terutama ditopang kenaikan APC.';
+          v_headline := 'Hutang sales terutama dipicu penurunan APC.';
           v_driver_label := 'Driver utama: APC';
         else
-          v_headline := 'Sales Projection positif karena struk dan APC sama-sama menguat.';
+          v_headline := 'Hutang sales membesar karena STD dan APC sama-sama melemah.';
           v_driver_label := 'Driver campuran';
         end if;
       elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
-        v_headline := 'Sales Projection tetap positif karena kenaikan struk menutup pelemahan APC.';
-        v_driver_label := 'Struk menahan penurunan APC';
+        v_headline := 'Hutang sales masih terbentuk karena penurunan STD lebih besar dari perbaikan APC.';
+        v_driver_label := 'STD menjadi penahan utama';
       elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
-        v_headline := 'Sales Projection tetap positif karena kenaikan APC menutup penurunan struk.';
-        v_driver_label := 'APC menahan penurunan struk';
+        v_headline := 'Hutang sales masih terbentuk karena penurunan APC lebih besar dari perbaikan STD.';
+        v_driver_label := 'APC menjadi penahan utama';
       elsif v_receipt_direction = 'positive' then
-        v_headline := 'Sales Projection positif terutama ditopang perbaikan jumlah struk.';
-        v_driver_label := 'Driver utama: Struk';
+        v_headline := 'Hutang sales terutama dipicu penurunan STD.';
+        v_driver_label := 'Driver utama: STD';
       elsif v_apc_direction = 'positive' then
-        v_headline := 'Sales Projection positif terutama ditopang perbaikan APC.';
+        v_headline := 'Hutang sales terutama dipicu penurunan APC.';
         v_driver_label := 'Driver utama: APC';
       end if;
     else
       if v_receipt_direction = 'negative' and v_apc_direction = 'negative' then
         if v_dominant_driver = 'receipt' then
-          v_headline := 'Sales Projection negatif terutama ditekan penurunan jumlah struk.';
-          v_driver_label := 'Driver utama: Struk';
+          v_headline := 'Hutang sales membaik terutama ditopang kenaikan STD.';
+          v_driver_label := 'Driver utama: STD';
         elsif v_dominant_driver = 'apc' then
-          v_headline := 'Sales Projection negatif terutama ditekan penurunan APC.';
+          v_headline := 'Hutang sales membaik terutama ditopang kenaikan APC.';
           v_driver_label := 'Driver utama: APC';
         else
-          v_headline := 'Sales Projection negatif karena struk dan APC sama-sama melemah.';
+          v_headline := 'Hutang sales membaik karena STD dan APC sama-sama menguat.';
           v_driver_label := 'Driver campuran';
         end if;
-      elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
-        v_headline := 'Sales Projection masih negatif karena penurunan struk lebih besar dari perbaikan APC.';
-        v_driver_label := 'Struk menjadi penahan utama';
       elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
-        v_headline := 'Sales Projection masih negatif karena penurunan APC lebih besar dari kenaikan struk.';
-        v_driver_label := 'APC menjadi penahan utama';
+        v_headline := 'Hutang sales tetap terkendali karena kenaikan APC menutup penurunan STD.';
+        v_driver_label := 'APC menahan penurunan STD';
+      elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
+        v_headline := 'Hutang sales tetap terkendali karena kenaikan STD menutup penurunan APC.';
+        v_driver_label := 'STD menahan penurunan APC';
       elsif v_receipt_direction = 'negative' then
-        v_headline := 'Sales Projection negatif terutama ditekan penurunan jumlah struk.';
-        v_driver_label := 'Driver utama: Struk';
+        v_headline := 'Hutang sales membaik terutama ditopang kenaikan STD.';
+        v_driver_label := 'Driver utama: STD';
       elsif v_apc_direction = 'negative' then
-        v_headline := 'Sales Projection negatif terutama ditekan penurunan APC.';
+        v_headline := 'Hutang sales membaik terutama ditopang kenaikan APC.';
         v_driver_label := 'Driver utama: APC';
       end if;
     end if;
 
-    v_analysis_points := array_append(v_analysis_points, format('Nilai Sales Projection saat ini %s.', public.format_idr(v_sales_value)));
-    v_analysis_points := array_append(v_analysis_points, format('Dampak dari perubahan struk terhadap projection sebesar %s.', public.format_idr(v_receipt_value)));
-    v_analysis_points := array_append(v_analysis_points, format('Dampak dari perubahan APC terhadap projection sebesar %s.', public.format_idr(v_apc_value)));
+    v_analysis_points := array_append(v_analysis_points, format('Nilai hutang sales saat ini %s.', public.format_idr(v_sales_value)));
+    v_analysis_points := array_append(v_analysis_points, format('Dampak dari perubahan STD terhadap hutang sales sebesar %s.', public.format_idr(v_receipt_value)));
+    v_analysis_points := array_append(v_analysis_points, format('Dampak dari perubahan APC terhadap hutang sales sebesar %s.', public.format_idr(v_apc_value)));
 
     if v_sales_direction = 'neutral' then
       if v_receipt_direction <> 'neutral' and v_apc_direction <> 'neutral' and v_receipt_direction <> v_apc_direction then
         v_analysis_points := array_append(
           v_analysis_points,
-          'Perubahan struk dan APC bergerak berlawanan arah, sehingga kenaikan salah satu faktor tertahan oleh penurunan faktor lainnya.'
+          'STD dan APC bergerak berlawanan arah, sehingga perbaikan salah satu faktor masih tertahan oleh pelemahan faktor lainnya.'
         );
       else
         v_analysis_points := array_append(
           v_analysis_points,
-          'Baik struk maupun APC belum menunjukkan perubahan yang cukup besar untuk menggeser projection secara material.'
+          'Baik STD maupun APC belum menunjukkan perubahan yang cukup besar untuk menggeser hutang sales secara material.'
         );
       end if;
     elsif v_receipt_direction = v_sales_direction and v_apc_direction = v_sales_direction then
       if v_dominant_driver = 'receipt' then
-        v_analysis_points := array_append(v_analysis_points, 'Arah projection paling banyak ditentukan oleh perubahan jumlah struk.');
+        v_analysis_points := array_append(v_analysis_points, 'Arah hutang sales paling banyak ditentukan oleh perubahan STD.');
       elsif v_dominant_driver = 'apc' then
-        v_analysis_points := array_append(v_analysis_points, 'Arah projection paling banyak ditentukan oleh perubahan APC.');
+        v_analysis_points := array_append(v_analysis_points, 'Arah hutang sales paling banyak ditentukan oleh perubahan APC.');
       else
-        v_analysis_points := array_append(v_analysis_points, 'Struk dan APC berkontribusi relatif berimbang terhadap arah projection.');
+        v_analysis_points := array_append(v_analysis_points, 'STD dan APC berkontribusi relatif berimbang terhadap arah hutang sales.');
       end if;
     elsif v_receipt_direction = v_sales_direction and v_apc_direction <> 'neutral' and v_apc_direction <> v_sales_direction then
-      v_analysis_points := array_append(v_analysis_points, 'Jumlah struk menjadi pendorong utama, tetapi perubahan APC masih menahan hasil akhirnya.');
+      v_analysis_points := array_append(v_analysis_points, 'Perubahan STD menjadi driver utama, sementara APC bergerak berlawanan arah dan menahan hasil akhirnya.');
     elsif v_apc_direction = v_sales_direction and v_receipt_direction <> 'neutral' and v_receipt_direction <> v_sales_direction then
-      v_analysis_points := array_append(v_analysis_points, 'APC menjadi pendorong utama, tetapi perubahan jumlah struk masih menahan hasil akhirnya.');
+      v_analysis_points := array_append(v_analysis_points, 'Perubahan APC menjadi driver utama, sementara STD bergerak berlawanan arah dan menahan hasil akhirnya.');
     end if;
 
     if abs(v_interaction_value) > (v_tolerance * 1.5) then
       v_analysis_points := array_append(
         v_analysis_points,
-        format('Masih ada efek kombinasi struk x APC sekitar %s yang muncul saat dua driver berubah bersamaan.', public.format_idr(v_interaction_value))
+        format('Masih ada efek kombinasi STD x APC sekitar %s yang muncul saat dua driver berubah bersamaan.', public.format_idr(v_interaction_value))
       );
-    end if;
+    end if; 
 
-    if v_sales_direction = 'negative' then
-      if v_receipt_direction = 'negative' then
+    if v_sales_direction = 'positive' then
+      if v_receipt_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Prioritaskan pemulihan jumlah struk: pastikan toko siap di jam ramai, kasir standby, antrean cepat terurai, dan item penarik traffic seperti kebutuhan harian serta produk promo tidak kosong.'
+          'Prioritaskan pemulihan STD: pastikan toko siap di jam ramai, kasir standby, antrean cepat terurai, dan item penarik traffic seperti kebutuhan harian serta produk promo tidak kosong.'
         );
       end if;
 
-      if v_apc_direction = 'negative' then
+      if v_apc_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
           'Perbaiki APC lewat bundling produk pelengkap, penawaran add-on di kasir, penguatan mix item bernilai lebih tinggi, dan suggestive selling yang konsisten oleh tim toko.'
         );
       end if;
 
-      if v_receipt_direction = 'negative' and v_apc_direction = 'negative' then
+      if v_receipt_direction = 'positive' and v_apc_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Karena dua driver sama-sama lemah, benahi traffic dan nilai belanja per struk secara paralel: display promo, ketersediaan fast moving, layanan kasir, dan add-on selling harus jalan bersamaan.'
-        );
-      elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
-        v_recommendation_points := array_append(
-          v_recommendation_points,
-          'Traffic sudah membantu, jadi fokus utama berikutnya adalah menaikkan nilai belanja per struk lewat bundling kebutuhan harian, cross-sell produk pelengkap, dan dorongan item promo.'
+          'Karena STD dan APC sama-sama lemah, benahi traffic dan nilai belanja per transaksi secara paralel: display promo, ketersediaan fast moving, layanan kasir, dan add-on selling harus jalan bersamaan.'
         );
       elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Penawaran produk pelengkap sudah membantu, jadi pertahankan pola itu dan fokus berikutnya adalah memulihkan transaksi lewat toko yang rapi, promo yang terlihat, dan stok item penarik kunjungan yang aman.'
+          'STD sudah membantu menekan gap, jadi fokus utama berikutnya adalah menaikkan APC lewat bundling kebutuhan harian, cross-sell produk pelengkap, dan dorongan item promo.'
+        );
+      elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
+        v_recommendation_points := array_append(
+          v_recommendation_points,
+          'APC sudah membantu menekan gap, jadi fokus berikutnya adalah memulihkan STD lewat toko yang rapi, promo yang terlihat, dan stok item penarik kunjungan yang aman.'
         );
       end if;
-    elsif v_sales_direction = 'positive' then
-      if v_receipt_direction = 'positive' and v_apc_direction = 'positive' then
+    elsif v_sales_direction = 'negative' then
+      if v_receipt_direction = 'negative' and v_apc_direction = 'negative' then
         v_recommendation_points := array_append(
           v_recommendation_points,
           'Pertahankan dua driver yang sedang sehat dengan menjaga toko tetap ready, display promo aktif, ketersediaan item fast moving, dan disiplin add-on selling di kasir.'
         );
-      elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
-        v_recommendation_points := array_append(
-          v_recommendation_points,
-          'Pertahankan aktivitas yang menaikkan struk, tetapi segera tutup kebocoran APC lewat bundling, cross-sell produk pelengkap, dan kontrol mix produk promo vs reguler.'
-        );
       elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Pertahankan kualitas add-on selling dan nilai belanja per struk, sambil memulihkan jumlah transaksi lewat store ready, display depan, dan availability item kebutuhan harian.'
+          'Pertahankan aktivitas yang mendorong STD, tetapi segera tutup kebocoran APC lewat bundling, cross-sell produk pelengkap, dan kontrol mix produk promo vs reguler.'
+        );
+      elsif v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
+        v_recommendation_points := array_append(
+          v_recommendation_points,
+          'Pertahankan kualitas bundling dan nilai belanja per transaksi, sambil memulihkan STD lewat store ready, display depan, dan availability item kebutuhan harian.'
         );
       end if;
 
       if v_dominant_driver = 'receipt' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Driver utama saat ini adalah struk, jadi pastikan toko siap di jam sibuk, promo terlihat jelas, kasir cukup, dan item penarik kunjungan tidak kosong.'
+          'Driver utama saat ini adalah STD, jadi pastikan toko siap di jam sibuk, promo terlihat jelas, kasir cukup, dan item penarik kunjungan tidak kosong.'
         );
       elsif v_dominant_driver = 'apc' then
         v_recommendation_points := array_append(
@@ -1100,17 +1093,17 @@ begin
       if v_receipt_direction = 'positive' and v_apc_direction = 'negative' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Jangan tambah program traffic dulu; fokus perbaiki APC lewat bundling kebutuhan harian, add-on kasir, dan cross-sell supaya kenaikan struk benar-benar menjadi sales bersih.'
+          'Jangan ubah pola bundling yang sudah bagus; fokus dorong pemulihan STD lewat kerapian toko, visibilitas promo, dan ketersediaan item fast moving.'
         );
       elsif v_receipt_direction = 'negative' and v_apc_direction = 'positive' then
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Jangan ubah pola add-on selling yang sudah bagus; fokus dorong jumlah transaksi lewat kerapian toko, visibilitas promo, dan ketersediaan item fast moving.'
+          'Jangan tambah program traffic dulu; fokus perbaiki APC lewat bundling kebutuhan harian, add-on kasir, dan cross-sell supaya STD yang sudah bagus bisa menghasilkan sales lebih bersih.'
         );
       else
         v_recommendation_points := array_append(
           v_recommendation_points,
-          'Monitor harian cukup ketat karena projection masih datar; cek struk, APC, ketersediaan stok, eksekusi promo, dan layanan kasir per shift.'
+          'Monitor harian cukup ketat karena hutang sales masih datar; cek STD, APC, ketersediaan stok, eksekusi promo, dan layanan kasir per shift.'
         );
       end if;
 
@@ -1261,8 +1254,37 @@ $$;
 
 grant execute on function public.upsert_sales_daily_report(date, numeric, integer) to authenticated;
 
+create or replace function public.delete_sales_daily_report(
+  p_date date
+)
+returns jsonb
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_row public.sales_daily_reports;
+begin
+  if not public.is_active_profile() or public.current_app_role() not in ('admin', 'super_admin') then
+    raise exception 'Akses menghapus sales harian tidak diizinkan.';
+  end if;
+
+  if p_date is null then
+    raise exception 'Tanggal sales harian wajib diisi.';
+  end if;
+
+  delete from public.sales_daily_reports
+  where date = p_date
+  returning * into v_row;
+
+  return to_jsonb(v_row);
+end;
+$$;
+
+grant execute on function public.delete_sales_daily_report(date) to authenticated;
+
 comment on function public.upsert_sales_month_target(date, numeric) is 'Menyimpan target sales bulanan melalui RPC agar write tidak langsung dari client ke tabel.';
 comment on function public.upsert_sales_daily_report(date, numeric, integer) is 'Menyimpan sales harian melalui RPC agar write tidak langsung dari client ke tabel.';
+comment on function public.delete_sales_daily_report(date) is 'Menghapus sales harian melalui RPC agar tanggal yang salah input bisa kembali kosong.';
 
 notify pgrst, 'reload schema';
 

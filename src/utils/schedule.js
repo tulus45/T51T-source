@@ -6,6 +6,7 @@ const PREFERRED_WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const MAX_OFF_PER_DAY = 2;
 const MIN_WORKING_PER_GENDER_PER_DAY = 2;
+export const SCHEDULE_PREVIOUS_WEEKS_LIMIT = 5;
 
 const SPECIAL_NAMES = {
   erda: 'erda ramdini',
@@ -183,6 +184,29 @@ function getWeekMeta(dateValue) {
     startDate,
     endDate,
     dateKeys: buildDateKeysBetween(startDate, endDate),
+  };
+}
+
+function getTodayDateKey() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+function getWeekBoundaryDateKeys(weekDateKeys = []) {
+  const weekStartDateKey = weekDateKeys[0];
+  const weekEndDateKey = weekDateKeys[weekDateKeys.length - 1];
+
+  if (!weekStartDateKey || !weekEndDateKey) {
+    throw new Error('Minggu jadwal tidak valid.');
+  }
+
+  return {
+    previousSundayDateKey: toDateKey(addDays(parseDateKey(weekStartDateKey), -1)),
+    nextMondayDateKey: toDateKey(addDays(parseDateKey(weekEndDateKey), 1)),
   };
 }
 
@@ -568,7 +592,127 @@ function validateHolidayCompensationRules({ activeEmployees, holidaySet, schedul
   });
 }
 
-export function validateScheduleWeekRules({ employees, schedules, weekDateKeys, holidayDates = [] }) {
+function validateEmployeeWeeklyOffCountRules({ activeEmployees, holidaySet, schedulesByDate, weekDateKeys }) {
+  const offDatesByEmployeeId = new Map(activeEmployees.map((employee) => [String(employee.id), []]));
+
+  weekDateKeys.forEach((dateKey) => {
+    const schedulesForDate = schedulesByDate.get(dateKey) || [];
+
+    schedulesForDate.forEach((schedule) => {
+      if (schedule.shift_type !== 'libur') {
+        return;
+      }
+
+      const employeeId = String(schedule.employee_id);
+
+      if (!offDatesByEmployeeId.has(employeeId)) {
+        return;
+      }
+
+      offDatesByEmployeeId.get(employeeId).push(dateKey);
+    });
+  });
+
+  activeEmployees.forEach((employee) => {
+    const offDates = offDatesByEmployeeId.get(String(employee.id)) || [];
+
+    if (offDates.length <= 1) {
+      return;
+    }
+
+    const holidayOffDates = offDates.filter((dateKey) => holidaySet.has(dateKey));
+
+    if (!holidayOffDates.length) {
+      throw new Error(`${employee.name} tidak boleh memiliki lebih dari 1 hari libur pada minggu tanpa tanggal merah.`);
+    }
+
+    if (!employee.holidayMandatoryOff) {
+      const nonHolidayOffDates = offDates.filter((dateKey) => !holidaySet.has(dateKey));
+
+      if (nonHolidayOffDates.length > 1) {
+        throw new Error(
+          `${employee.name} maksimal memiliki 1 hari libur tambahan di luar tanggal merah pada minggu yang sama.`,
+        );
+      }
+    }
+  });
+}
+
+function normalizeAdjacentSchedulesForWeek(schedules = [], weekDateKeys = []) {
+  const { previousSundayDateKey, nextMondayDateKey } = getWeekBoundaryDateKeys(weekDateKeys);
+  const allowedDateKeys = new Set([previousSundayDateKey, nextMondayDateKey]);
+
+  return (Array.isArray(schedules) ? schedules : [])
+    .filter((schedule) => schedule?.employee_id && schedule?.date)
+    .map((schedule) => ({
+      ...schedule,
+      date: toDateKey(parseDateKey(schedule.date)),
+    }))
+    .filter((schedule) => allowedDateKeys.has(schedule.date))
+    .sort(sortSchedulesByDateAndEmployee);
+}
+
+function getOffEmployeeIdsForSchedules(schedules = []) {
+  return new Set(
+    (Array.isArray(schedules) ? schedules : [])
+      .filter((schedule) => schedule?.shift_type === 'libur' && schedule?.employee_id)
+      .map((schedule) => String(schedule.employee_id)),
+  );
+}
+
+function buildBoundaryOffContext(weekDateKeys, activeEmployees, adjacentSchedules = []) {
+  const { previousSundayDateKey, nextMondayDateKey } = getWeekBoundaryDateKeys(weekDateKeys);
+  const activeEmployeeIds = new Set((Array.isArray(activeEmployees) ? activeEmployees : []).map((employee) => String(employee.id)));
+  const normalizedAdjacentSchedules = normalizeAdjacentSchedulesForWeek(adjacentSchedules, weekDateKeys);
+
+  return {
+    previousSundayDateKey,
+    nextMondayDateKey,
+    previousSundayOffEmployeeIds: getOffEmployeeIdsForSchedules(
+      normalizedAdjacentSchedules.filter(
+        (schedule) => schedule.date === previousSundayDateKey && activeEmployeeIds.has(String(schedule.employee_id)),
+      ),
+    ),
+    nextMondayOffEmployeeIds: getOffEmployeeIdsForSchedules(
+      normalizedAdjacentSchedules.filter(
+        (schedule) => schedule.date === nextMondayDateKey && activeEmployeeIds.has(String(schedule.employee_id)),
+      ),
+    ),
+  };
+}
+
+function validateSundayMondayBoundaryOffRules({ activeEmployees, schedulesByDate, weekDateKeys, adjacentSchedules = [] }) {
+  const employeesById = new Map(activeEmployees.map((employee) => [String(employee.id), employee]));
+  const mondayDateKey = weekDateKeys[0];
+  const sundayDateKey = weekDateKeys[weekDateKeys.length - 1];
+  const boundaryOffContext = buildBoundaryOffContext(weekDateKeys, activeEmployees, adjacentSchedules);
+  const mondayOffEmployeeIds = getOffEmployeeIdsForSchedules(schedulesByDate.get(mondayDateKey) || []);
+  const sundayOffEmployeeIds = getOffEmployeeIdsForSchedules(schedulesByDate.get(sundayDateKey) || []);
+
+  const mondayConflictEmployeeId = Array.from(mondayOffEmployeeIds).find((employeeId) =>
+    boundaryOffContext.previousSundayOffEmployeeIds.has(employeeId),
+  );
+
+  if (mondayConflictEmployeeId) {
+    const employee = employeesById.get(mondayConflictEmployeeId);
+    throw new Error(
+      `${employee?.name || 'Pegawai'} libur pada Minggu ${boundaryOffContext.previousSundayDateKey} dan tidak boleh libur lagi pada Senin ${mondayDateKey}.`,
+    );
+  }
+
+  const sundayConflictEmployeeId = Array.from(sundayOffEmployeeIds).find((employeeId) =>
+    boundaryOffContext.nextMondayOffEmployeeIds.has(employeeId),
+  );
+
+  if (sundayConflictEmployeeId) {
+    const employee = employeesById.get(sundayConflictEmployeeId);
+    throw new Error(
+      `${employee?.name || 'Pegawai'} libur pada Minggu ${sundayDateKey} dan tidak boleh libur lagi pada Senin ${boundaryOffContext.nextMondayDateKey}.`,
+    );
+  }
+}
+
+export function validateScheduleWeekRules({ employees, schedules, weekDateKeys, holidayDates = [], adjacentSchedules = [] }) {
   const activeEmployees = prepareEmployees(employees);
   const employeesById = new Map(activeEmployees.map((employee) => [String(employee.id), employee]));
   const holidaySet = new Set(holidayDates);
@@ -605,6 +749,130 @@ export function validateScheduleWeekRules({ employees, schedules, weekDateKeys, 
     schedulesByDate,
     weekDateKeys,
   });
+
+  validateEmployeeWeeklyOffCountRules({
+    activeEmployees,
+    holidaySet,
+    schedulesByDate,
+    weekDateKeys,
+  });
+
+  validateSundayMondayBoundaryOffRules({
+    activeEmployees,
+    schedulesByDate,
+    weekDateKeys,
+    adjacentSchedules,
+  });
+}
+
+function buildScheduleUniqueKey(schedule) {
+  return `${schedule.date}:${schedule.employee_id}`;
+}
+
+function sortSchedulesByDateAndEmployee(leftSchedule, rightSchedule) {
+  if (leftSchedule.date !== rightSchedule.date) {
+    return compareByDate(leftSchedule.date, rightSchedule.date);
+  }
+
+  if (leftSchedule.shift_type !== rightSchedule.shift_type) {
+    return leftSchedule.shift_type.localeCompare(rightSchedule.shift_type);
+  }
+
+  return String(leftSchedule.employee_id).localeCompare(String(rightSchedule.employee_id));
+}
+
+function normalizeSchedulesForWeek(schedules = [], weekDateKeys = []) {
+  const allowedDateKeys = new Set(weekDateKeys);
+
+  return (Array.isArray(schedules) ? schedules : [])
+    .filter((schedule) => schedule?.employee_id && schedule?.date)
+    .map((schedule) => ({
+      ...schedule,
+      date: toDateKey(parseDateKey(schedule.date)),
+    }))
+    .filter((schedule) => allowedDateKeys.has(schedule.date))
+    .sort(sortSchedulesByDateAndEmployee);
+}
+
+function mergeSchedulesByUniqueKey(primarySchedules = [], secondarySchedules = []) {
+  const scheduleMap = new Map();
+
+  [...(Array.isArray(secondarySchedules) ? secondarySchedules : []), ...(Array.isArray(primarySchedules) ? primarySchedules : [])].forEach(
+    (schedule) => {
+      scheduleMap.set(buildScheduleUniqueKey(schedule), schedule);
+    },
+  );
+
+  return Array.from(scheduleMap.values()).sort(sortSchedulesByDateAndEmployee);
+}
+
+export function reconcileWeeklySchedulesAfterManualChanges({
+  date,
+  employees,
+  schedules = [],
+  createdBy,
+  holidayDates = [],
+  lockedScheduleKeys = [],
+  adjacentSchedules = [],
+}) {
+  const weekMeta = getWeekMeta(date);
+  const normalizedSchedules = normalizeSchedulesForWeek(schedules, weekMeta.dateKeys);
+
+  try {
+    validateScheduleWeekRules({
+      employees,
+      schedules: normalizedSchedules,
+      weekDateKeys: weekMeta.dateKeys,
+      holidayDates,
+      adjacentSchedules,
+    });
+
+    return {
+      schedules: normalizedSchedules,
+      autoAdjusted: false,
+    };
+  } catch (validationError) {
+    const normalizedLockedScheduleKeys = new Set(
+      (Array.isArray(lockedScheduleKeys) ? lockedScheduleKeys : []).map((scheduleKey) => String(scheduleKey)).filter(Boolean),
+    );
+
+    if (!normalizedLockedScheduleKeys.size) {
+      throw validationError;
+    }
+
+    const lockedSchedules = normalizedSchedules.filter((schedule) =>
+      normalizedLockedScheduleKeys.has(buildScheduleUniqueKey(schedule)),
+    );
+
+    try {
+      const regeneratedSchedules = generateWeeklySchedules({
+        date: weekMeta.startDate,
+        employees,
+        existingSchedules: lockedSchedules,
+        createdBy,
+        holidayDates,
+        adjacentSchedules,
+      });
+      const reconciledSchedules = mergeSchedulesByUniqueKey(lockedSchedules, regeneratedSchedules);
+
+      validateScheduleWeekRules({
+        employees,
+        schedules: reconciledSchedules,
+        weekDateKeys: weekMeta.dateKeys,
+        holidayDates,
+        adjacentSchedules,
+      });
+
+      return {
+        schedules: reconciledSchedules,
+        autoAdjusted: true,
+      };
+    } catch (reconcileError) {
+      throw new Error(
+        `Perubahan manual belum bisa dipenuhi walau sistem sudah mencoba menyesuaikan jadwal lain. ${reconcileError.message}`,
+      );
+    }
+  }
 }
 
 function prepareEmployees(employees, employeeRuleOverrides = []) {
@@ -706,15 +974,24 @@ function getWeekdayCandidates(employee, holidayCountByWeekday) {
 }
 
 function canAssignEmployeeToWeekday(employee, weekday, weekdayAssignments, totalGenderCounts, context = {}) {
+  const employeeId = String(employee.id);
   const assignedEmployees = weekdayAssignments.get(weekday) || [];
   const dateKey = context.weekdayDateMap?.get(weekday);
-  const fixedWorkingDates = context.fixedWorkingDatesByEmployee?.get(String(employee.id));
+  const fixedWorkingDates = context.fixedWorkingDatesByEmployee?.get(employeeId);
 
-  if (assignedEmployees.some((assignedEmployee) => String(assignedEmployee.id) === String(employee.id))) {
+  if (assignedEmployees.some((assignedEmployee) => String(assignedEmployee.id) === employeeId)) {
     return false;
   }
 
   if (dateKey && fixedWorkingDates?.has(dateKey)) {
+    return false;
+  }
+
+  if (weekday === 1 && context.previousSundayOffEmployeeIds?.has(employeeId)) {
+    return false;
+  }
+
+  if (weekday === 0 && context.nextMondayOffEmployeeIds?.has(employeeId)) {
     return false;
   }
 
@@ -1094,7 +1371,7 @@ function isEmployeeInSeparatedPair(employeeId, separatedPairs) {
   );
 }
 
-function buildExistingScheduleContext(dateKeys, employees, existingSchedules = [], holidaySet = new Set()) {
+function buildExistingScheduleContext(dateKeys, employees, existingSchedules = [], holidaySet = new Set(), boundaryOffContext = null) {
   const allowedDateKeys = new Set(dateKeys);
   const employeesById = new Map(employees.map((employee) => [String(employee.id), employee]));
   const weekdayDateMap = new Map(dateKeys.map((dateKey) => [getDayIndex(dateKey), dateKey]));
@@ -1103,6 +1380,8 @@ function buildExistingScheduleContext(dateKeys, employees, existingSchedules = [
   const existingEmployeeIdsByDate = new Map(dateKeys.map((dateKey) => [dateKey, new Set()]));
   const fixedWorkingDatesByEmployee = new Map(employees.map((employee) => [String(employee.id), new Set()]));
   const employeesWithFixedOff = new Set();
+  const mondayDateKey = dateKeys[0];
+  const sundayDateKey = dateKeys[dateKeys.length - 1];
 
   existingSchedules.forEach((schedule) => {
     const dateKey = toDateKey(parseDateKey(schedule.date));
@@ -1146,6 +1425,26 @@ function buildExistingScheduleContext(dateKeys, employees, existingSchedules = [
     }
   });
 
+  const mondayConflictEmployee = (weekdayAssignments.get(1) || []).find((employee) =>
+    boundaryOffContext?.previousSundayOffEmployeeIds?.has(String(employee.id)),
+  );
+
+  if (mondayConflictEmployee) {
+    throw new Error(
+      `${mondayConflictEmployee.name} sudah libur pada Minggu ${boundaryOffContext.previousSundayDateKey} sehingga tidak boleh tetap libur pada Senin ${mondayDateKey}.`,
+    );
+  }
+
+  const sundayConflictEmployee = (weekdayAssignments.get(0) || []).find((employee) =>
+    boundaryOffContext?.nextMondayOffEmployeeIds?.has(String(employee.id)),
+  );
+
+  if (sundayConflictEmployee) {
+    throw new Error(
+      `${sundayConflictEmployee.name} sudah libur pada Minggu ${sundayDateKey} sehingga tidak boleh tetap libur pada Senin ${boundaryOffContext.nextMondayDateKey}.`,
+    );
+  }
+
   return {
     weekdayDateMap,
     weekdayAssignments,
@@ -1153,6 +1452,8 @@ function buildExistingScheduleContext(dateKeys, employees, existingSchedules = [
     existingEmployeeIdsByDate,
     fixedWorkingDatesByEmployee,
     employeesWithFixedOff,
+    previousSundayOffEmployeeIds: boundaryOffContext?.previousSundayOffEmployeeIds || new Set(),
+    nextMondayOffEmployeeIds: boundaryOffContext?.nextMondayOffEmployeeIds || new Set(),
   };
 }
 
@@ -1548,6 +1849,33 @@ export function getWeekDateRange(dateValue) {
   };
 }
 
+export function getScheduleHistoryStartDate(referenceDate = getTodayDateKey()) {
+  return toDateKey(addDays(parseDateKey(getWeekMeta(referenceDate).startDate), -SCHEDULE_PREVIOUS_WEEKS_LIMIT * 7));
+}
+
+export function clampScheduleWeekStartDate(dateValue, referenceDate = getTodayDateKey()) {
+  const weekStartDate = getWeekMeta(dateValue).startDate;
+  const minimumWeekStartDate = getScheduleHistoryStartDate(referenceDate);
+
+  return weekStartDate < minimumWeekStartDate ? minimumWeekStartDate : weekStartDate;
+}
+
+export function isScheduleWeekWithinHistoryLimit(dateValue, referenceDate = getTodayDateKey()) {
+  return getWeekMeta(dateValue).startDate >= getScheduleHistoryStartDate(referenceDate);
+}
+
+export function getScheduleBoundaryDateRange(dateValue) {
+  const weekMeta = getWeekMeta(dateValue);
+  const { previousSundayDateKey, nextMondayDateKey } = getWeekBoundaryDateKeys(weekMeta.dateKeys);
+
+  return {
+    startDate: previousSundayDateKey,
+    endDate: nextMondayDateKey,
+    previousSundayDateKey,
+    nextMondayDateKey,
+  };
+}
+
 function resolveHolidayPeriod(periodValue) {
   if (typeof periodValue === 'string') {
     const monthMeta = getMonthMeta(periodValue);
@@ -1694,12 +2022,28 @@ export function generateMonthlySchedules({ month, employees, existingSchedules =
   return generatedSchedules;
 }
 
-export function generateWeeklySchedules({ date, employees, existingSchedules = [], createdBy, holidayDates = [], ruleOverrides = {} }) {
+export function generateWeeklySchedules({
+  date,
+  employees,
+  existingSchedules = [],
+  createdBy,
+  holidayDates = [],
+  ruleOverrides = {},
+  adjacentSchedules = [],
+}) {
   const weekMeta = getWeekMeta(date);
   const holidaySet = new Set(holidayDates);
   const { activeEmployees, separatedPairs } = resolveGeneratorRuleSet(employees, ruleOverrides);
   const totalGenderCounts = assertMonthlyGeneratorPreconditions(activeEmployees);
-  const existingScheduleContext = buildExistingScheduleContext(weekMeta.dateKeys, activeEmployees, existingSchedules, holidaySet);
+  const normalizedExistingSchedules = normalizeSchedulesForWeek(existingSchedules, weekMeta.dateKeys);
+  const boundaryOffContext = buildBoundaryOffContext(weekMeta.dateKeys, activeEmployees, adjacentSchedules);
+  const existingScheduleContext = buildExistingScheduleContext(
+    weekMeta.dateKeys,
+    activeEmployees,
+    normalizedExistingSchedules,
+    holidaySet,
+    boundaryOffContext,
+  );
   const holidayCountByWeekday = buildHolidayCountByWeekday(weekMeta.dateKeys, holidaySet);
   const orderedEmployees = [...activeEmployees]
     .filter((employee) => !existingScheduleContext.employeesWithFixedOff.has(String(employee.id)))
@@ -1778,11 +2122,21 @@ export function generateWeeklySchedules({ date, employees, existingSchedules = [
 
   if (!generatedSchedules) {
     throw new Error(
-      existingSchedules.length > 0
-        ? 'Generator tidak menemukan kombinasi jadwal yang memenuhi seluruh aturan minggu ini. Periksa jadwal yang sudah ada karena bisa jadi bertabrakan dengan rule shift, kasir, pimpinan shift, atau libur mingguan.'
-        : 'Generator tidak menemukan kombinasi jadwal yang memenuhi seluruh aturan shift, libur, gender, kasir, pimpinan shift, dan tanggal merah pada minggu ini.',
+      normalizedExistingSchedules.length > 0
+        ? 'Generator tidak menemukan kombinasi jadwal yang memenuhi seluruh aturan minggu ini. Periksa jadwal yang sudah ada karena bisa jadi bertabrakan dengan rule shift, kasir, pimpinan shift, libur mingguan, atau rule Minggu ke Senin berikutnya.'
+        : 'Generator tidak menemukan kombinasi jadwal yang memenuhi seluruh aturan shift, libur, gender, kasir, pimpinan shift, tanggal merah, dan rule Minggu ke Senin berikutnya pada minggu ini.',
     );
   }
+
+  const finalSchedules = mergeSchedulesByUniqueKey(normalizedExistingSchedules, generatedSchedules);
+
+  validateScheduleWeekRules({
+    employees,
+    schedules: finalSchedules,
+    weekDateKeys: weekMeta.dateKeys,
+    holidayDates,
+    adjacentSchedules,
+  });
 
   if (!generatedSchedules.length) {
     throw new Error('Minggu yang dipilih sudah memiliki jadwal lengkap, jadi tidak ada slot kosong yang perlu digenerate.');
@@ -1823,8 +2177,3 @@ export function generateRoundRobinSchedules({ date, employees, existingSchedules
     };
   });
 }
-
-
-
-
-

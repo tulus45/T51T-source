@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import Button from '../components/ui/Button';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 import Input from '../components/ui/Input';
 import Spinner from '../components/ui/Spinner';
 import StatCard from '../components/ui/StatCard';
 import { usePermissions } from '../hooks/usePermissions';
 import { useToast } from '../hooks/useToast';
 import {
+  deleteDailySalesReport,
   getSalesMonthTarget,
   listDailySalesReports,
   upsertDailySalesReport,
@@ -149,13 +151,7 @@ function shiftMonthValue(monthValue, offset) {
 }
 
 function getSalesPageErrorMessage(error) {
-  const message = error?.message || 'Terjadi kesalahan pada laporan sales.';
-
-  if (message.includes('sales_daily_reports') || message.includes('sales_monthly_targets')) {
-    return 'Database Supabase belum diupdate. Jalankan file supabase/sales_reports_migration.sql di SQL Editor Supabase, lalu refresh aplikasi.';
-  }
-
-  return message;
+  return error?.message || 'Terjadi kesalahan pada laporan sales.';
 }
 
 function SalesReportsPage() {
@@ -170,11 +166,14 @@ function SalesReportsPage() {
   const [loading, setLoading] = useState(true);
   const [savingTarget, setSavingTarget] = useState(false);
   const [savingDailyReport, setSavingDailyReport] = useState(false);
+  const [deletingDailyReport, setDeletingDailyReport] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [targetAmountInput, setTargetAmountInput] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => getDefaultSelectedDate(getMonthContext(getCurrentMonthValue())));
   const [salesAmountInput, setSalesAmountInput] = useState('');
   const [receiptCountInput, setReceiptCountInput] = useState('');
-  const isMonthNavigationDisabled = loading || savingTarget || savingDailyReport;
+  const isDailyReportMutating = savingDailyReport || deletingDailyReport;
+  const isMonthNavigationDisabled = loading || savingTarget || isDailyReportMutating;
 
   async function loadSalesData() {
     try {
@@ -309,6 +308,36 @@ function SalesReportsPage() {
     }
   }
 
+  async function handleDeleteDailySales() {
+    if (!selectedDayReport) {
+      setIsDeleteDialogOpen(false);
+      return;
+    }
+
+    try {
+      assertPermission(canManageSalesReports, 'Role Anda hanya punya akses baca untuk laporan sales.');
+      setDeletingDailyReport(true);
+
+      await deleteDailySalesReport(selectedDate);
+
+      await loadSalesData();
+      setIsDeleteDialogOpen(false);
+      showToast({
+        type: 'success',
+        title: 'Sales harian dihapus',
+        message: `Data sales untuk ${selectedDate} berhasil dikosongkan.`,
+      });
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Gagal menghapus sales harian',
+        message: getSalesPageErrorMessage(error),
+      });
+    } finally {
+      setDeletingDailyReport(false);
+    }
+  }
+
   function handleDailyDateChange(event) {
     const nextDate = event.target.value;
 
@@ -440,7 +469,7 @@ function SalesReportsPage() {
 
             <form className="mt-4 grid gap-4 xl:grid-cols-[180px,minmax(0,1fr),220px,220px,auto] xl:items-end" onSubmit={handleSaveDailySales}>
               <Input
-                disabled={savingDailyReport}
+                disabled={isDailyReportMutating}
                 label="Tanggal"
                 max={monthContext.monthEnd}
                 min={monthContext.monthStart}
@@ -450,7 +479,7 @@ function SalesReportsPage() {
                 value={selectedDate}
               />
               <Input
-                disabled={!canManageSalesReports || savingDailyReport}
+                disabled={!canManageSalesReports || isDailyReportMutating}
                 inputMode="numeric"
                 label="Nilai Penjualan"
                 onChange={(event) => setSalesAmountInput(sanitizeNumberInput(event.target.value))}
@@ -460,7 +489,7 @@ function SalesReportsPage() {
                 value={formatGroupedNumber(salesAmountInput)}
               />
               <Input
-                disabled={!canManageSalesReports || savingDailyReport}
+                disabled={!canManageSalesReports || isDailyReportMutating}
                 label="Jumlah Struk"
                 min="0"
                 onChange={(event) => setReceiptCountInput(sanitizeNumberInput(event.target.value))}
@@ -469,10 +498,27 @@ function SalesReportsPage() {
                 value={receiptCountInput}
               />
               <Input label="APC" readOnly value={formatRupiah(apcPreview)} />
-              <Button className="h-[46px] w-full xl:w-auto" disabled={!canManageSalesReports || savingDailyReport} type="submit" variant="brand">
+              <Button className="h-[46px] w-full xl:w-auto" disabled={!canManageSalesReports || isDailyReportMutating} type="submit" variant="brand">
                 {savingDailyReport ? 'Menyimpan...' : selectedDayReport ? 'Perbarui Sales' : 'Simpan Sales'}
               </Button>
             </form>
+
+            {selectedDayReport ? (
+              <div className="mt-3 flex flex-col gap-3 rounded-3xl border border-red-100 bg-red-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-red-700">Perlu kosongkan tanggal ini?</p>
+                  <p className="mt-1 text-sm text-red-700/80">Hapus data jika tanggal terpilih salah input agar dashboard tidak menghitung tanggal ini sebagai hari yang sudah terisi.</p>
+                </div>
+                <Button
+                  className="w-full sm:w-auto"
+                  disabled={!canManageSalesReports || isDailyReportMutating}
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  variant="danger"
+                >
+                  {deletingDailyReport ? 'Menghapus...' : 'Hapus Sales'}
+                </Button>
+              </div>
+            ) : null}
           </div>
           ) : null}
 
@@ -654,11 +700,22 @@ function SalesReportsPage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        confirmLabel="Hapus Sales"
+        description={`Data sales pada ${formatDate(selectedDate)} akan dihapus dan tanggal ini kembali kosong di kalender serta dashboard.`}
+        isOpen={isDeleteDialogOpen}
+        loading={deletingDailyReport}
+        onClose={() => setIsDeleteDialogOpen(false)}
+        onConfirm={handleDeleteDailySales}
+        title="Hapus data sales harian?"
+      />
     </div>
   );
 }
 
 export default SalesReportsPage;
+
 
 
 

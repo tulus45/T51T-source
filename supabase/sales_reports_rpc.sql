@@ -75,7 +75,36 @@ $$;
 
 grant execute on function public.upsert_sales_daily_report(date, numeric, integer) to authenticated;
 
+create or replace function public.delete_sales_daily_report(
+  p_date date
+)
+returns jsonb
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_row public.sales_daily_reports;
+begin
+  if not public.is_active_profile() or public.current_app_role() not in ('admin', 'super_admin') then
+    raise exception 'Akses menghapus sales harian tidak diizinkan.';
+  end if;
+
+  if p_date is null then
+    raise exception 'Tanggal sales harian wajib diisi.';
+  end if;
+
+  delete from public.sales_daily_reports
+  where date = p_date
+  returning * into v_row;
+
+  return to_jsonb(v_row);
+end;
+$$;
+
+grant execute on function public.delete_sales_daily_report(date) to authenticated;
+
 comment on function public.upsert_sales_month_target(date, numeric) is 'Menyimpan target sales bulanan melalui RPC agar write tidak langsung dari client ke tabel.';
 comment on function public.upsert_sales_daily_report(date, numeric, integer) is 'Menyimpan sales harian melalui RPC agar write tidak langsung dari client ke tabel.';
+comment on function public.delete_sales_daily_report(date) is 'Menghapus sales harian melalui RPC agar tanggal yang salah input bisa kembali kosong.';
 
 notify pgrst, 'reload schema';

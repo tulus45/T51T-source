@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react';
+﻿import { Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import EmployeeDetailsTable from '../components/employees/EmployeeDetailsTable';
 import EmployeeMobileList from '../components/employees/EmployeeMobileList';
@@ -19,45 +19,10 @@ import {
   updateEmployee,
   uploadEmployeePhoto,
 } from '../services/employeesService';
-import { supabaseProjectRef } from '../lib/supabaseClient';
 import { assertPermission } from '../utils/permissions';
 
 function getEmployeePageErrorMessage(error, fallback = 'Gagal memuat data pegawai.') {
-  const message = String(error?.message || '');
-
-  if (
-    message.includes('employee_shift_separation_rules') ||
-    message.includes('relasi pisah shift')
-  ) {
-    return `Database Supabase belum diupdate atau schema cache belum refresh pada project ${supabaseProjectRef || 'aktif'}. Jalankan file supabase/employee_shift_separation_rules_migration.sql di SQL Editor project itu, tunggu beberapa detik, lalu refresh aplikasi. Jika masih sama, jalankan SQL: NOTIFY pgrst, 'reload schema';`;
-  }
-
-  if (
-    message.includes('schema cache') &&
-    (message.includes("'kasir'") || message.includes("'pimpinan_shift'"))
-  ) {
-    return 'Database Supabase belum diupdate. Jalankan file supabase/employee_role_flags_migration.sql di SQL Editor Supabase, lalu refresh aplikasi.';
-  }
-
-  if (
-    message.includes('schema cache') &&
-    (
-      message.includes("'off_day_mode'") ||
-      message.includes("'off_day_weekdays'") ||
-      message.includes("'holiday_mandatory_off'")
-    )
-  ) {
-    return 'Database Supabase belum diupdate. Jalankan file supabase/employee_schedule_preferences_migration.sql di SQL Editor Supabase, lalu refresh aplikasi.';
-  }
-
-  if (
-    message.includes('schema cache') &&
-    (message.includes("'shift_pagi'") || message.includes("'shift_siang'"))
-  ) {
-    return `Database Supabase belum diupdate atau schema cache belum refresh pada project ${supabaseProjectRef || 'aktif'}. Jalankan file supabase/employee_shift_checklist_migration.sql di SQL Editor project itu, tunggu beberapa detik, lalu refresh aplikasi. Jika masih sama, jalankan SQL: NOTIFY pgrst, 'reload schema';`;
-  }
-
-  return message || fallback;
+  return error?.message || fallback;
 }
 
 function EmployeesPage() {
@@ -260,5 +225,6 @@ function EmployeesPage() {
 }
 
 export default EmployeesPage;
+
 
 

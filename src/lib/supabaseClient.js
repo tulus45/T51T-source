@@ -1,42 +1,89 @@
-import { createClient } from '@supabase/supabase-js';
+﻿const AUTH_STORAGE_KEY = 'store-staff-manager-auth';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabaseProjectRef = (() => {
-  try {
-    return new URL(supabaseUrl).hostname.split('.')[0];
-  } catch {
-    return '';
-  }
-})();
-const supabaseStorageKey = `sb-${supabaseProjectRef || 'store-staff-manager'}-auth-token`;
-
-function getAuthStorage() {
+function getWindowStorage() {
   if (typeof window === 'undefined') {
-    return undefined;
+    return [];
+  }
+
+  return [window.sessionStorage, window.localStorage];
+}
+
+function parseStoredAuth(value) {
+  if (!value) {
+    return null;
   }
 
   try {
-    window.localStorage.removeItem(supabaseStorageKey);
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
-    // Ignore cleanup failures; session auth still works via sessionStorage.
+    return null;
+  }
+}
+
+export function getStoredAuthSession() {
+  const storageList = getWindowStorage();
+
+  for (const storage of storageList) {
+    const parsed = parseStoredAuth(storage.getItem(AUTH_STORAGE_KEY));
+
+    if (parsed?.session?.token) {
+      return parsed;
+    }
   }
 
-  return window.sessionStorage;
+  return null;
 }
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Supabase environment variables belum diatur.');
+export function setStoredAuthSession(value) {
+  if (!value) {
+    return;
+  }
+
+  const serializedValue = JSON.stringify(value);
+
+  getWindowStorage().forEach((storage) => {
+    storage.setItem(AUTH_STORAGE_KEY, serializedValue);
+  });
 }
 
-export { supabaseProjectRef };
+export function clearStoredAuthSession() {
+  getWindowStorage().forEach((storage) => {
+    storage.removeItem(AUTH_STORAGE_KEY);
+  });
+}
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storageKey: supabaseStorageKey,
-    storage: getAuthStorage(),
-  },
-});
+export function getAuthToken() {
+  return getStoredAuthSession()?.session?.token || '';
+}
+
+export async function apiFetch(path, options = {}) {
+  const { body, headers = {}, includeAuth = true, ...restOptions } = options;
+  const requestHeaders = new Headers(headers);
+
+  if (body !== undefined && !requestHeaders.has('Content-Type')) {
+    requestHeaders.set('Content-Type', 'application/json');
+  }
+
+  if (includeAuth) {
+    const token = getAuthToken();
+
+    if (token && !requestHeaders.has('Authorization')) {
+      requestHeaders.set('Authorization', `Bearer ${token}`);
+    }
+  }
+
+  const response = await fetch(path, {
+    ...restOptions,
+    headers: requestHeaders,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json') ? await response.json() : null;
+
+  if (!response.ok) {
+    throw new Error(payload?.error || `Request gagal dengan status ${response.status}.`);
+  }
+
+  return payload;
+}

@@ -85,7 +85,7 @@ function UsersPage() {
   return (
     <div>
       <PageHeader
-        description="Khusus super admin. Atur role dan status aktif user tanpa perlu membuka dashboard Supabase."
+        description="Khusus super admin. Atur role dan status aktif user langsung dari backend lokal."
         title="Manajemen User"
       />
 
@@ -181,3 +181,4 @@ function UsersPage() {
 }
 
 export default UsersPage;
+

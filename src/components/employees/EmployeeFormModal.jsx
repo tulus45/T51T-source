@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Modal from '../ui/Modal';
@@ -144,7 +144,7 @@ function EmployeeFormModal({ employee, employees = [], isOpen, loading, onClose,
 
   return (
     <Modal
-      description="Simpan data pegawai beserta foto profil dari Supabase Storage. Rule generator mingguan akan membaca setting shift, libur, dan pasangan pisah shift langsung dari data ini."
+      description="Simpan data pegawai beserta foto profil lokal. Rule generator mingguan akan membaca setting shift, libur, dan pasangan pisah shift langsung dari data ini."
       isOpen={isOpen}
       onClose={onClose}
       title={employee ? 'Edit Pegawai' : 'Tambah Pegawai'}
@@ -330,3 +330,4 @@ function EmployeeFormModal({ employee, employees = [], isOpen, loading, onClose,
 }
 
 export default EmployeeFormModal;
+

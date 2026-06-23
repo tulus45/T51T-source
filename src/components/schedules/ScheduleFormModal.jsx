@@ -96,7 +96,7 @@ function ScheduleFormModal({ employees, isOpen, loading, onClose, onRequestDelet
 
   return (
     <Modal
-      description="Perubahan disimpan sebagai draft minggu ini dulu. Rules mingguan baru dicek saat Anda menekan Simpan Perubahan."
+      description="Perubahan disimpan sebagai draft minggu ini dulu. Saat Anda menekan Simpan Perubahan, rules mingguan akan dicek. Jika perlu, sistem akan menyesuaikan jadwal lain tanpa mengubah slot jadwal yang sedang Anda edit."
       isOpen={isOpen}
       onClose={onClose}
       title={schedule ? 'Edit Jadwal Shift' : 'Tambah Jadwal Shift'}

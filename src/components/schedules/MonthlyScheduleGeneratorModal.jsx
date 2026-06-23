@@ -1,3 +1,4 @@
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import Button from '../ui/Button';
 import DatePickerInput from '../ui/DatePickerInput';
@@ -18,33 +19,42 @@ const generatorRules = [
   'Hari biasa maksimal 2 pegawai libur. Pada Sabtu, Minggu, dan tanggal merah jumlah pegawai libur bisa lebih dari 2 selama kebutuhan shift tetap terpenuhi.',
   'Setiap shift harus memiliki pegawai laki-laki dan perempuan, minimal 1 kasir, dan minimal 1 pimpinan shift.',
   'Pegawai yang masuk daftar pisah shift tidak boleh berada pada shift yang sama.',
+  'Pegawai yang libur di hari Minggu tidak boleh libur lagi di hari Senin pada minggu berikutnya.',
   'Pada setiap tanggal merah, generator akan meliburkan minimal 1 pegawai dari daftar Tgl Merah Wajib Libur, bukan semuanya sekaligus.',
   'Jika libur utama jatuh di tanggal merah, generator akan menambahkan libur tambahan pada minggu yang sama. Pegawai yang wajib libur di tanggal merah boleh mendapat libur lebih dari 1 hari bila diperlukan agar jadwal tetap valid.',
   'Sehari sebelum libur pegawai diprioritaskan shift pagi, dan sehari sesudah libur diprioritaskan shift siang selama tidak bertabrakan dengan rule pegawai.',
 ];
 
-function ScheduleGeneratorModal({ initialDate, initialHolidayDates = '', isOpen, loading, onClose, onSubmit }) {
+function clampGeneratorDate(dateValue, minDate = '') {
+  const normalizedDate = getWeekDateRange(dateValue || new Date().toISOString().slice(0, 10)).startDate;
+
+  return minDate && normalizedDate < minDate ? minDate : normalizedDate;
+}
+
+function ScheduleGeneratorModal({ initialDate, initialHolidayDates = '', isOpen, loading, minDate = '', onClose, onSubmit }) {
   const [form, setForm] = useState(defaultValues);
+  const [isRulesExpanded, setIsRulesExpanded] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
       return;
     }
 
-    const normalizedDate = getWeekDateRange(initialDate || new Date().toISOString().slice(0, 10)).startDate;
+    const normalizedDate = clampGeneratorDate(initialDate, minDate);
 
     setForm({
       date: normalizedDate,
       holidayDates: initialHolidayDates || '',
     });
-  }, [initialDate, initialHolidayDates, isOpen]);
+    setIsRulesExpanded(false);
+  }, [initialDate, initialHolidayDates, isOpen, minDate]);
 
   function handleChange(event) {
     const { name, value } = event.target;
 
     setForm((current) => ({
       ...current,
-      [name]: name === 'date' ? getWeekDateRange(value).startDate : value,
+      [name]: name === 'date' ? clampGeneratorDate(value, minDate) : value,
     }));
   }
 
@@ -56,7 +66,7 @@ function ScheduleGeneratorModal({ initialDate, initialHolidayDates = '', isOpen,
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="xl" title="Generate Jadwal 1 Minggu">
       <form className="space-y-5" onSubmit={handleSubmit}>
-        <DatePickerInput label="Tanggal Acuan" name="date" onChange={handleChange} value={form.date} />
+        <DatePickerInput label="Tanggal Acuan" minDate={minDate} name="date" onChange={handleChange} value={form.date} />
 
         <Textarea
           className="min-h-[120px]"
@@ -68,15 +78,32 @@ function ScheduleGeneratorModal({ initialDate, initialHolidayDates = '', isOpen,
         />
 
         <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-          <p className="font-semibold text-slate-900">Rules Generate Jadwal</p>
-          <ul className="mt-3 space-y-2">
-            {generatorRules.map((rule) => (
-              <li className="flex items-start gap-3" key={rule}>
-                <span aria-hidden="true" className="mt-2 inline-block h-2 w-2 shrink-0 rounded-full bg-brand-600" />
-                <span>{rule}</span>
-              </li>
-            ))}
-          </ul>
+          <button
+            className="flex w-full items-center justify-between gap-3 text-left"
+            onClick={() => setIsRulesExpanded((current) => !current)}
+            type="button"
+          >
+            <div>
+              <p className="font-semibold text-slate-900">Rules Generate Jadwal</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {isRulesExpanded ? 'Klik untuk sembunyikan rule generator.' : 'Klik untuk lihat rule generator.'}
+              </p>
+            </div>
+            <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-500 shadow-sm">
+              {isRulesExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </span>
+          </button>
+
+          {isRulesExpanded ? (
+            <ul className="mt-3 space-y-2">
+              {generatorRules.map((rule) => (
+                <li className="flex items-start gap-3" key={rule}>
+                  <span aria-hidden="true" className="mt-2 inline-block h-2 w-2 shrink-0 rounded-full bg-brand-600" />
+                  <span>{rule}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="flex justify-end gap-3 pt-2">
@@ -93,5 +120,4 @@ function ScheduleGeneratorModal({ initialDate, initialHolidayDates = '', isOpen,
 }
 
 export default ScheduleGeneratorModal;
-
 

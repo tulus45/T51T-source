@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, Sparkles, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+﻿import { ChevronLeft, ChevronRight, Sparkles, Trash2 } from 'lucide-react';
+import { Component, useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import ScheduleGeneratorModal from '../components/schedules/MonthlyScheduleGeneratorModal';
 import ScheduleFormModal from '../components/schedules/ScheduleFormModal';
@@ -7,6 +7,7 @@ import ScheduleWeekView from '../components/schedules/ScheduleWeekView';
 import Button from '../components/ui/Button';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
 import DatePickerInput from '../components/ui/DatePickerInput';
+import EmptyState from '../components/ui/EmptyState';
 import Spinner from '../components/ui/Spinner';
 import { useAuth } from '../hooks/useAuth';
 import { usePermissions } from '../hooks/usePermissions';
@@ -17,16 +18,20 @@ import {
   deleteSchedules,
   deleteSchedulesByIds,
   listSchedules,
+  pruneExpiredSchedules,
   upsertSchedules,
 } from '../services/schedulesService';
 import { formatDate } from '../utils/formatters';
 import { assertPermission } from '../utils/permissions';
 import {
+  clampScheduleWeekStartDate,
   generateWeeklySchedules,
+  getScheduleBoundaryDateRange,
+  getScheduleHistoryStartDate,
   getWeekDateRange,
   parseHolidayEntryInput,
   validateScheduleRuleForEntry,
-  validateScheduleWeekRules,
+  reconcileWeeklySchedulesAfterManualChanges,
 } from '../utils/schedule';
 
 const HOLIDAY_STORAGE_KEY = 'schedule-holiday-entries';
@@ -58,6 +63,15 @@ function shiftDateByDays(dateValue, amount) {
   const date = new Date(`${dateValue}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + amount);
   return date.toISOString().slice(0, 10);
+}
+
+function getTodayDateKey() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
 }
 
 function getEmployeeRowPriority(employee) {
@@ -208,6 +222,36 @@ function areSchedulesEquivalent(leftSchedule, rightSchedule) {
   );
 }
 
+function getLockedScheduleKeysFromPendingChanges(pendingChanges) {
+  return new Set(
+    Object.values(pendingChanges)
+      .filter((change) => change?.type === 'update' && change.schedule?.employee_id && change.schedule?.date)
+      .map((change) => buildScheduleUniqueKey(change.schedule)),
+  );
+}
+
+function countAdjustedSchedules(beforeSchedules, afterSchedules, lockedScheduleKeys = new Set()) {
+  const beforeMap = new Map((Array.isArray(beforeSchedules) ? beforeSchedules : []).map((schedule) => [buildScheduleUniqueKey(schedule), schedule]));
+  const afterMap = new Map((Array.isArray(afterSchedules) ? afterSchedules : []).map((schedule) => [buildScheduleUniqueKey(schedule), schedule]));
+  const uniqueKeys = new Set([...beforeMap.keys(), ...afterMap.keys()]);
+  let changedCount = 0;
+
+  uniqueKeys.forEach((key) => {
+    const beforeSchedule = beforeMap.get(key) || null;
+    const afterSchedule = afterMap.get(key) || null;
+
+    if (lockedScheduleKeys.has(key)) {
+      return;
+    }
+
+    if (!beforeSchedule || !afterSchedule || !areSchedulesEquivalent(beforeSchedule, afterSchedule)) {
+      changedCount += 1;
+    }
+  });
+
+  return changedCount;
+}
+
 function applyPendingScheduleChanges(baseSchedules, pendingChanges, employeesById) {
   const scheduleMap = new Map(
     baseSchedules.map((schedule) => [
@@ -268,12 +312,79 @@ function isDateWithinWeek(dateValue, weekRange) {
   return dateValue >= weekRange.startDate && dateValue <= weekRange.endDate;
 }
 
-function SchedulesPage() {
+function splitSchedulesForWeekContext(scheduleRows = [], weekRange, boundaryRange) {
+  return (Array.isArray(scheduleRows) ? scheduleRows : []).reduce(
+    (accumulator, schedule) => {
+      if (isDateWithinWeek(schedule.date, weekRange)) {
+        accumulator.weekSchedules.push(schedule);
+        return accumulator;
+      }
+
+      if (schedule.date === boundaryRange.previousSundayDateKey || schedule.date === boundaryRange.nextMondayDateKey) {
+        accumulator.adjacentSchedules.push(schedule);
+      }
+
+      return accumulator;
+    },
+    {
+      weekSchedules: [],
+      adjacentSchedules: [],
+    },
+  );
+}
+
+class SchedulePageErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      error: null,
+    };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      error,
+    };
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <EmptyState
+          action={
+            <Button onClick={() => window.location.reload()} variant="secondary">
+              Muat Ulang Halaman
+            </Button>
+          }
+          description={this.state.error?.message || 'Terjadi error saat merender halaman jadwal shift.'}
+          title="Halaman Jadwal Shift crash"
+        />
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function getSchedulePageErrorMessage(error, fallback = 'Gagal memuat jadwal shift.') {
+  return error?.message || fallback;
+}
+
+function SchedulesPageContent() {
   const { user } = useAuth();
   const { canManageSchedules, isReadonly } = usePermissions();
   const { showToast } = useToast();
+  const todayDate = getTodayDateKey();
+  const minimumWeekStartDate = getScheduleHistoryStartDate(todayDate);
   const [employees, setEmployees] = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [loadError, setLoadError] = useState('');
   const [holidayEntriesByDate, setHolidayEntriesByDate] = useState(() => loadHolidayEntriesByDate());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -286,11 +397,11 @@ function SchedulesPage() {
   const [isResetWeekOpen, setIsResetWeekOpen] = useState(false);
   const [pendingScheduleChanges, setPendingScheduleChanges] = useState({});
   const [generatorDraft, setGeneratorDraft] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: getWeekDateRange(todayDate).startDate,
     holidayDates: '',
   });
   const [filters, setFilters] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: getWeekDateRange(todayDate).startDate,
   });
 
   useEffect(() => {
@@ -304,6 +415,12 @@ function SchedulesPage() {
   async function loadSchedulePage(nextFilters = filters) {
     try {
       setLoading(true);
+      setLoadError('');
+
+      if (canManageSchedules) {
+        await pruneExpiredSchedules({ throwOnError: false });
+      }
+
       const weekRange = getWeekDateRange(nextFilters.date);
       const [employeeRows, scheduleRows] = await Promise.all([
         listEmployees(),
@@ -315,11 +432,16 @@ function SchedulesPage() {
 
       setEmployees(employeeRows);
       setSchedules(scheduleRows);
+      setLoadError('');
     } catch (error) {
+      const message = getSchedulePageErrorMessage(error);
+      setEmployees([]);
+      setSchedules([]);
+      setLoadError(message);
       showToast({
         type: 'error',
         title: 'Jadwal gagal dimuat',
-        message: error.message,
+        message,
       });
     } finally {
       setLoading(false);
@@ -334,8 +456,6 @@ function SchedulesPage() {
     if (!isReadonly) {
       return;
     }
-
-    const todayDate = new Date().toISOString().slice(0, 10);
 
     if (!isSameWeek(filters.date, todayDate)) {
       setFilters((current) => ({
@@ -357,6 +477,7 @@ function SchedulesPage() {
     [employeesById, pendingScheduleChanges, schedules],
   );
   const weekLabel = `${formatDate(selectedWeek.startDate)} - ${formatDate(selectedWeek.endDate)}`;
+  const historyLimitLabel = formatDate(minimumWeekStartDate);
   const weekRows = buildWeekRows(selectedWeek.dateKeys, employees, displayedSchedules);
   const pendingChangeCount = Object.keys(pendingScheduleChanges).length;
   const hasPendingScheduleChanges = pendingChangeCount > 0;
@@ -366,6 +487,14 @@ function SchedulesPage() {
       type: 'error',
       title: 'Masih ada perubahan draft',
       message: `Simpan atau batalkan perubahan dulu sebelum ${actionLabel}.`,
+    });
+  }
+
+  function showHistoryLimitWarning() {
+    showToast({
+      type: 'error',
+      title: 'Riwayat jadwal dibatasi',
+      message: `Jadwal hanya tersedia mulai minggu ${historyLimitLabel} karena sistem hanya menyimpan maksimal 5 minggu sebelumnya.`,
     });
   }
 
@@ -380,7 +509,13 @@ function SchedulesPage() {
     }
 
     const { value } = event.target;
-    const normalizedDate = getWeekDateRange(value).startDate;
+    const requestedWeekStartDate = getWeekDateRange(value).startDate;
+    const normalizedDate = clampScheduleWeekStartDate(requestedWeekStartDate, todayDate);
+
+    if (normalizedDate !== requestedWeekStartDate) {
+      showHistoryLimitWarning();
+    }
+
     setFilters((current) => ({
       ...current,
       date: normalizedDate,
@@ -397,9 +532,17 @@ function SchedulesPage() {
       return;
     }
 
+    const requestedDate = shiftDateByDays(filters.date, offset * 7);
+    const normalizedDate = clampScheduleWeekStartDate(requestedDate, todayDate);
+
+    if (normalizedDate === filters.date) {
+      showHistoryLimitWarning();
+      return;
+    }
+
     setFilters((current) => ({
       ...current,
-      date: shiftDateByDays(current.date, offset * 7),
+      date: normalizedDate,
     }));
   }
 
@@ -560,21 +703,31 @@ function SchedulesPage() {
       assertPermission(canManageSchedules, 'Role Anda hanya punya akses baca untuk jadwal shift.');
       setSaving(true);
 
-      const latestWeekSchedules = await listSchedules({
-        dateFrom: selectedWeek.startDate,
-        dateTo: selectedWeek.endDate,
+      const boundaryRange = getScheduleBoundaryDateRange(selectedWeek.startDate);
+      const surroundingSchedules = await listSchedules({
+        dateFrom: boundaryRange.startDate,
+        dateTo: boundaryRange.endDate,
       });
-      const finalSchedules = applyPendingScheduleChanges(latestWeekSchedules, pendingScheduleChanges, employeesById).map(
+      const { weekSchedules: latestWeekSchedules, adjacentSchedules } = splitSchedulesForWeekContext(
+        surroundingSchedules,
+        selectedWeek,
+        boundaryRange,
+      );
+      const draftSchedules = applyPendingScheduleChanges(latestWeekSchedules, pendingScheduleChanges, employeesById).map(
         ({ isPending, ...schedule }) => schedule,
       );
       const holidayDates = selectedWeekHolidayEntries.map((entry) => entry.date);
-
-      validateScheduleWeekRules({
+      const lockedScheduleKeys = getLockedScheduleKeysFromPendingChanges(pendingScheduleChanges);
+      const { autoAdjusted, schedules: finalSchedules } = reconcileWeeklySchedulesAfterManualChanges({
+        date: selectedWeek.startDate,
         employees,
-        schedules: finalSchedules,
-        weekDateKeys: selectedWeek.dateKeys,
+        schedules: draftSchedules,
+        createdBy: user.id,
         holidayDates,
+        lockedScheduleKeys: Array.from(lockedScheduleKeys),
+        adjacentSchedules,
       });
+      const autoAdjustedCount = autoAdjusted ? countAdjustedSchedules(draftSchedules, finalSchedules, lockedScheduleKeys) : 0;
 
       if (finalSchedules.length > 0) {
         await upsertSchedules(finalSchedules.map((schedule) => normalizeScheduleForPersistence(schedule, user.id)));
@@ -595,7 +748,11 @@ function SchedulesPage() {
       showToast({
         type: 'success',
         title: 'Perubahan jadwal tersimpan',
-        message: `${pendingChangeCount} perubahan berhasil disimpan dan dicek sesuai rules minggu ini.`,
+        message: autoAdjusted
+          ? autoAdjustedCount > 0
+            ? `${pendingChangeCount} perubahan berhasil disimpan. Sistem juga menyesuaikan ${autoAdjustedCount} jadwal lain agar tetap sesuai rules tanpa mengubah slot jadwal yang Anda edit.`
+            : `${pendingChangeCount} perubahan berhasil disimpan. Rules minggu ini tetap aman dan slot jadwal yang Anda edit tidak diubah lagi oleh sistem.`
+          : `${pendingChangeCount} perubahan berhasil disimpan dan dicek sesuai rules minggu ini.`,
       });
     } catch (error) {
       showToast({
@@ -650,16 +807,23 @@ function SchedulesPage() {
       const weekRange = getWeekDateRange(form.date);
       const holidayEntries = parseHolidayEntryInput(form.holidayDates, weekRange);
       const holidayDates = holidayEntries.map((entry) => entry.date);
-      const existingWeekSchedules = await listSchedules({
-        dateFrom: weekRange.startDate,
-        dateTo: weekRange.endDate,
+      const boundaryRange = getScheduleBoundaryDateRange(weekRange.startDate);
+      const surroundingSchedules = await listSchedules({
+        dateFrom: boundaryRange.startDate,
+        dateTo: boundaryRange.endDate,
       });
+      const { weekSchedules: existingWeekSchedules, adjacentSchedules } = splitSchedulesForWeekContext(
+        surroundingSchedules,
+        weekRange,
+        boundaryRange,
+      );
       const generatedSchedules = generateWeeklySchedules({
         date: form.date,
         employees,
         existingSchedules: existingWeekSchedules,
         createdBy: user.id,
         holidayDates,
+        adjacentSchedules,
       });
 
       await bulkCreateSchedules(generatedSchedules);
@@ -705,10 +869,11 @@ function SchedulesPage() {
 
   function renderWeekNavigationButtons() {
     const isNavigationDisabled = hasPendingScheduleChanges || saving;
+    const isPreviousWeekDisabled = isNavigationDisabled || shiftDateByDays(selectedWeek.startDate, -7) < minimumWeekStartDate;
 
     return (
       <div className="flex flex-wrap gap-2">
-        <Button className="h-[46px]" disabled={isNavigationDisabled} onClick={() => handleWeekNavigation(-1)} variant="secondary">
+        <Button className="h-[46px]" disabled={isPreviousWeekDisabled} onClick={() => handleWeekNavigation(-1)} variant="secondary">
           <ChevronLeft className="h-4 w-4" />
           Minggu Sebelumnya
         </Button>
@@ -749,7 +914,7 @@ function SchedulesPage() {
     return (
       <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <p className="text-sm font-medium text-amber-900">
-          {pendingChangeCount} perubahan belum disimpan. Lanjutkan edit beberapa jadwal dulu, lalu simpan sekaligus agar rules dicek di akhir.
+          {pendingChangeCount} perubahan belum disimpan. Lanjutkan edit beberapa jadwal dulu, lalu simpan sekaligus. Jika ada benturan rule, sistem akan menyesuaikan jadwal lain tanpa mengubah slot jadwal yang Anda edit.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button className="h-[46px]" disabled={saving} onClick={handleDiscardPendingChanges} variant="secondary">
@@ -770,7 +935,14 @@ function SchedulesPage() {
       {!isReadonly ? (
       <div className="surface relative z-30 mb-6 p-4">
         <div className="flex flex-col gap-4 lg:hidden">
-          <DatePickerInput disabled={hasPendingScheduleChanges || saving} label="Tanggal Acuan" name="date" onChange={handleFilterChange} value={filters.date} />
+          <DatePickerInput
+            disabled={hasPendingScheduleChanges || saving}
+            label="Tanggal Acuan"
+            minDate={minimumWeekStartDate}
+            name="date"
+            onChange={handleFilterChange}
+            value={filters.date}
+          />
           <div>
             <p className="label">Navigasi Minggu</p>
             {renderWeekNavigationButtons()}
@@ -783,19 +955,40 @@ function SchedulesPage() {
           <p className="label mb-0">Navigasi Minggu</p>
           {canManageSchedules ? <span /> : null}
 
-          <DatePickerInput className="lg:w-[220px]" disabled={hasPendingScheduleChanges || saving} name="date" onChange={handleFilterChange} value={filters.date} />
+          <DatePickerInput
+            className="lg:w-[220px]"
+            disabled={hasPendingScheduleChanges || saving}
+            minDate={minimumWeekStartDate}
+            name="date"
+            onChange={handleFilterChange}
+            value={filters.date}
+          />
           {renderWeekNavigationButtons()}
           {renderManagementButtons()}
         </div>
+
+        <p className="text-xs text-slate-500">
+          Riwayat jadwal tersedia mulai minggu {historyLimitLabel}. Sistem menyimpan maksimal 5 minggu sebelumnya.
+        </p>
 
         {renderPendingDraftBanner()}
       </div>
       ) : null}
 
-      {loading ? (
+            {loading ? (
         <div className="surface flex min-h-[260px] items-center justify-center">
           <Spinner label="Mengambil jadwal shift 1 minggu..." />
         </div>
+      ) : loadError ? (
+        <EmptyState
+          action={
+            <Button onClick={() => loadSchedulePage(filters)} variant="secondary">
+              Coba Muat Ulang
+            </Button>
+          }
+          description={loadError}
+          title="Jadwal Shift belum bisa dibuka"
+        />
       ) : (
         <ScheduleWeekView
           canManage={canManageSchedules}
@@ -812,6 +1005,7 @@ function SchedulesPage() {
         initialHolidayDates={generatorDraft.holidayDates}
         isOpen={isGeneratorOpen}
         loading={generating}
+        minDate={minimumWeekStartDate}
         onClose={() => setIsGeneratorOpen(false)}
         onSubmit={handleGenerateWeeklySchedule}
       />
@@ -853,7 +1047,14 @@ function SchedulesPage() {
   );
 }
 
+
+function SchedulesPage() {
+  return (
+    <SchedulePageErrorBoundary resetKey="schedules-page">
+      <SchedulesPageContent />
+    </SchedulePageErrorBoundary>
+  );
+}
+
 export default SchedulesPage;
-
-
 

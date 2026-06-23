@@ -1,5 +1,4 @@
 ﻿import { createContext, useContext, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
 import * as authService from '../services/authService';
 
 const AuthContext = createContext(null);
@@ -23,30 +22,21 @@ function getLoggedOutState() {
 export function AuthProvider({ children }) {
   const [authState, setAuthState] = useState(initialState);
 
-  async function hydrateSession(session) {
-    if (!session?.user) {
+  function applyAuthPayload(payload) {
+    if (!payload?.session?.token || !payload?.user || !payload?.profile) {
       setAuthState(getLoggedOutState());
-      return;
+      return null;
     }
 
-    try {
-      const profile = await authService.getProfileByUserId(session.user.id);
+    const nextState = {
+      session: payload.session,
+      user: payload.user,
+      profile: payload.profile,
+      loading: false,
+    };
 
-      if (!profile.is_active) {
-        await authService.logoutSession();
-        throw new Error('Akun Anda sedang nonaktif. Hubungi super admin.');
-      }
-
-      setAuthState({
-        session,
-        user: session.user,
-        profile,
-        loading: false,
-      });
-    } catch (error) {
-      setAuthState(getLoggedOutState());
-      throw error;
-    }
+    setAuthState(nextState);
+    return nextState;
   }
 
   useEffect(() => {
@@ -54,13 +44,13 @@ export function AuthProvider({ children }) {
 
     async function bootstrap() {
       try {
-        const session = await authService.getCurrentSession();
+        const data = await authService.getCurrentSession();
 
         if (!isMounted) {
           return;
         }
 
-        await hydrateSession(session);
+        applyAuthPayload(data);
       } catch {
         if (isMounted) {
           setAuthState(getLoggedOutState());
@@ -70,25 +60,8 @@ export function AuthProvider({ children }) {
 
     bootstrap();
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      window.setTimeout(() => {
-        if (!isMounted) {
-          return;
-        }
-
-        hydrateSession(session).catch(() => {
-          if (isMounted) {
-            setAuthState(getLoggedOutState());
-          }
-        });
-      }, 0);
-    });
-
     return () => {
       isMounted = false;
-      subscription.unsubscribe();
     };
   }, []);
 
@@ -100,20 +73,7 @@ export function AuthProvider({ children }) {
 
     try {
       const data = await authService.loginWithPassword({ email, password });
-      const profile = await authService.getProfileByUserId(data.user.id);
-
-      if (!profile.is_active) {
-        await authService.logoutSession();
-        throw new Error('Akun Anda sedang nonaktif. Hubungi super admin.');
-      }
-
-      setAuthState({
-        session: data.session,
-        user: data.user,
-        profile,
-        loading: false,
-      });
-
+      applyAuthPayload(data);
       return data;
     } catch (error) {
       setAuthState(getLoggedOutState());
@@ -127,25 +87,22 @@ export function AuthProvider({ children }) {
   }
 
   async function refreshProfile() {
-    if (!authState.user?.id) {
+    const data = await authService.getCurrentSession();
+
+    if (!data) {
+      setAuthState(getLoggedOutState());
       return null;
     }
 
-    const profile = await authService.getProfileByUserId(authState.user.id);
-
-    setAuthState((current) => ({
-      ...current,
-      profile,
-    }));
-
-    return profile;
+    applyAuthPayload(data);
+    return data.profile;
   }
 
   return (
     <AuthContext.Provider
       value={{
         ...authState,
-        isAuthenticated: Boolean(authState.session),
+        isAuthenticated: Boolean(authState.session?.token),
         login,
         logout,
         refreshProfile,

@@ -1,49 +1,91 @@
-import { supabase } from '../lib/supabaseClient';
-import { unwrapResponse } from './baseService';
+﻿import { createQueryString, requestJson } from './baseService';
+import { getScheduleHistoryStartDate } from '../utils/schedule';
 
-const scheduleSelect = '*, employee:employees(id, name, position, photo_url)';
+function assertScheduleDateWithinRetention(dateValue) {
+  const retentionStartDate = getScheduleHistoryStartDate();
+
+  if (dateValue && String(dateValue) < retentionStartDate) {
+    throw new Error(
+      `Jadwal sebelum ${retentionStartDate} tidak lagi disimpan karena sistem hanya menyimpan maksimal 5 minggu sebelumnya.`,
+    );
+  }
+}
+
+function assertSchedulesWithinRetention(payload) {
+  const scheduleRows = Array.isArray(payload) ? payload : [payload];
+
+  scheduleRows.forEach((schedule) => {
+    assertScheduleDateWithinRetention(schedule?.date);
+  });
+}
+
+function normalizeScheduleFilters(filters = {}) {
+  const retentionStartDate = getScheduleHistoryStartDate();
+  const normalizedFilters = { ...(filters || {}) };
+
+  if (normalizedFilters.date && String(normalizedFilters.date) < retentionStartDate) {
+    return null;
+  }
+
+  if (normalizedFilters.dateTo && String(normalizedFilters.dateTo) < retentionStartDate) {
+    return null;
+  }
+
+  if (normalizedFilters.dateFrom && String(normalizedFilters.dateFrom) < retentionStartDate) {
+    normalizedFilters.dateFrom = retentionStartDate;
+  }
+
+  return normalizedFilters;
+}
+
+export async function pruneExpiredSchedules({ throwOnError = true } = {}) {
+  try {
+    await requestJson('/api/schedules/prune', {
+      method: 'POST',
+    });
+    return true;
+  } catch (error) {
+    if (throwOnError) {
+      throw error;
+    }
+
+    return false;
+  }
+}
 
 export async function listSchedules(filters = {}) {
-  let query = supabase
-    .from('schedules')
-    .select(scheduleSelect)
-    .order('date', { ascending: true })
-    .order('start_time', { ascending: true, nullsFirst: false });
+  const normalizedFilters = normalizeScheduleFilters(filters);
 
-  if (filters.date) {
-    query = query.eq('date', filters.date);
+  if (!normalizedFilters) {
+    return [];
   }
 
-  if (filters.dateFrom) {
-    query = query.gte('date', filters.dateFrom);
-  }
-
-  if (filters.dateTo) {
-    query = query.lte('date', filters.dateTo);
-  }
-
-  if (filters.employeeId && filters.employeeId !== 'all') {
-    query = query.eq('employee_id', filters.employeeId);
-  }
-
-  const { data, error } = await query;
-  unwrapResponse(error, 'Gagal mengambil jadwal shift.');
-
-  return data || [];
+  return requestJson(`/api/schedules${createQueryString({
+    date: normalizedFilters.date,
+    dateFrom: normalizedFilters.dateFrom,
+    dateTo: normalizedFilters.dateTo,
+    employeeId: normalizedFilters.employeeId,
+  })}`, {
+    method: 'GET',
+  });
 }
 
 export async function createSchedule(payload) {
-  const { data, error } = await supabase.from('schedules').insert(payload).select(scheduleSelect).single();
-  unwrapResponse(error, 'Gagal menambah jadwal shift.');
-
-  return data;
+  assertSchedulesWithinRetention(payload);
+  await pruneExpiredSchedules({ throwOnError: false });
+  return requestJson('/api/schedules', {
+    body: payload,
+    method: 'POST',
+  });
 }
 
 export async function updateSchedule(id, payload) {
-  const { data, error } = await supabase.from('schedules').update(payload).eq('id', id).select(scheduleSelect).single();
-  unwrapResponse(error, 'Gagal memperbarui jadwal shift.');
-
-  return data;
+  assertSchedulesWithinRetention(payload);
+  await pruneExpiredSchedules({ throwOnError: false });
+  return requestJson(`/api/schedules/${id}`, {
+    body: payload,
+    method: 'PUT',
+  });
 }
 
 export async function upsertSchedules(payload = []) {
@@ -51,18 +93,18 @@ export async function upsertSchedules(payload = []) {
     return [];
   }
 
-  const { data, error } = await supabase
-    .from('schedules')
-    .upsert(payload, { onConflict: 'date,employee_id' })
-    .select(scheduleSelect);
-  unwrapResponse(error, 'Gagal menyimpan perubahan jadwal shift.');
-
-  return data || [];
+  assertSchedulesWithinRetention(payload);
+  await pruneExpiredSchedules({ throwOnError: false });
+  return requestJson('/api/schedules/upsert', {
+    body: payload,
+    method: 'POST',
+  });
 }
 
 export async function deleteSchedule(id) {
-  const { error } = await supabase.from('schedules').delete().eq('id', id);
-  unwrapResponse(error, 'Gagal menghapus jadwal shift.');
+  return requestJson(`/api/schedules/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function deleteSchedulesByIds(ids = []) {
@@ -72,40 +114,31 @@ export async function deleteSchedulesByIds(ids = []) {
     return;
   }
 
-  const { error } = await supabase.from('schedules').delete().in('id', normalizedIds);
-  unwrapResponse(error, 'Gagal menghapus jadwal shift lama.');
+  return requestJson('/api/schedules/delete-by-ids', {
+    body: {
+      ids: normalizedIds,
+    },
+    method: 'POST',
+  });
 }
 
 export async function deleteSchedules(filters = {}) {
-  let query = supabase.from('schedules').delete();
-
-  if (filters.date) {
-    query = query.eq('date', filters.date);
-  }
-
-  if (filters.dateFrom) {
-    query = query.gte('date', filters.dateFrom);
-  }
-
-  if (filters.dateTo) {
-    query = query.lte('date', filters.dateTo);
-  }
-
-  if (filters.employeeId && filters.employeeId !== 'all') {
-    query = query.eq('employee_id', filters.employeeId);
-  }
-
-  if (filters.all) {
-    query = query.not('id', 'is', null);
-  }
-
-  const { error } = await query;
-  unwrapResponse(error, 'Gagal mereset jadwal shift.');
+  return requestJson(`/api/schedules${createQueryString({
+    date: filters.date,
+    dateFrom: filters.dateFrom,
+    dateTo: filters.dateTo,
+    employeeId: filters.employeeId,
+    all: filters.all ? 'true' : '',
+  })}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function bulkCreateSchedules(payload) {
-  const { data, error } = await supabase.from('schedules').insert(payload).select(scheduleSelect);
-  unwrapResponse(error, 'Gagal generate jadwal shift.');
-
-  return data || [];
+  assertSchedulesWithinRetention(payload);
+  await pruneExpiredSchedules({ throwOnError: false });
+  return requestJson('/api/schedules/bulk', {
+    body: payload,
+    method: 'POST',
+  });
 }
