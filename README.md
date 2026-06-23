@@ -38,8 +38,8 @@ server/
 
 Backend akan men-seed akun admin lokal otomatis jika database belum ada.
 
-- Email: `admin@t51t.local`
-- Password: `admin123`
+- Email: `tulusbudianto@gmail.com`
+- Password: `DanauPoso##45`
 - Role: `super_admin`
 
 ## Menjalankan Backend

@@ -1,4 +1,6 @@
 database.sqlite
+database.sqlite-shm
+database.sqlite-wal
 uploads/
 node_modules/
 *.log

@@ -11,8 +11,8 @@ export const databasePath = path.join(serverDir, 'database.sqlite');
 export const uploadsDir = path.join(serverDir, 'uploads');
 export const ROLE_VALUES = ['super_admin', 'admin', 'viewer'];
 export const SESSION_DURATION_DAYS = 30;
-export const DEFAULT_ADMIN_EMAIL = 'admin@t51t.local';
-export const DEFAULT_ADMIN_PASSWORD = 'admin123';
+export const DEFAULT_ADMIN_EMAIL = 'tulusbudianto@gmail.com';
+export const DEFAULT_ADMIN_PASSWORD = 'DanauPoso##45';
 export const DEFAULT_ADMIN_NAME = 'Administrator';
 export const DEFAULT_OFF_DAY_WEEKDAYS = [1, 2, 3, 4, 5, 6, 0];
 
