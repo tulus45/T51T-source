@@ -8,6 +8,7 @@ import {
   SESSION_DURATION_DAYS,
   addDaysIso,
   all,
+  createPasswordHash,
   createSessionToken,
   get,
   initializeDatabase,
@@ -300,6 +301,98 @@ function normalizeSalesDailyPayload(payload = {}) {
   };
 }
 
+function normalizeUserEmail(value, { required = false } = {}) {
+  const normalizedValue = String(value || '').trim().toLowerCase();
+
+  if (!normalizedValue) {
+    if (required) {
+      throw createHttpError(400, 'Email user wajib diisi.');
+    }
+
+    return '';
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedValue)) {
+    throw createHttpError(400, 'Format email user tidak valid.');
+  }
+
+  return normalizedValue;
+}
+
+function normalizeUserPassword(value, { required = false } = {}) {
+  const normalizedValue = String(value || '');
+
+  if (!normalizedValue) {
+    if (required) {
+      throw createHttpError(400, 'Password user wajib diisi.');
+    }
+
+    return '';
+  }
+
+  if (normalizedValue.length < 6) {
+    throw createHttpError(400, 'Password user minimal 6 karakter.');
+  }
+
+  return normalizedValue;
+}
+
+function normalizeUserFullName(value, fallbackEmail = '') {
+  const normalizedValue = String(value || '').trim();
+
+  if (normalizedValue) {
+    return normalizedValue;
+  }
+
+  const emailPrefix = String(fallbackEmail || '').split('@')[0]?.trim();
+  return emailPrefix || 'Tanpa Nama';
+}
+
+function normalizeCreateUserPayload(payload = {}) {
+  const email = normalizeUserEmail(payload.email, { required: true });
+
+  return {
+    email,
+    password: normalizeUserPassword(payload.password, { required: true }),
+    full_name: normalizeUserFullName(payload.full_name, email),
+    role: normalizeProfileRole(payload.role || 'viewer'),
+    is_active: toBooleanInt(payload.is_active !== undefined ? Boolean(payload.is_active) : true),
+  };
+}
+
+function normalizeUpdateUserPayload(payload = {}, existingUser = null) {
+  const normalizedPayload = {};
+  const nextEmail = payload.email !== undefined
+    ? normalizeUserEmail(payload.email, { required: true })
+    : existingUser?.email || '';
+
+  if (payload.full_name !== undefined) {
+    normalizedPayload.full_name = normalizeUserFullName(payload.full_name, nextEmail);
+  }
+
+  if (payload.email !== undefined) {
+    normalizedPayload.email = nextEmail;
+  }
+
+  if (payload.password !== undefined) {
+    const normalizedPassword = normalizeUserPassword(payload.password);
+
+    if (normalizedPassword) {
+      normalizedPayload.password = normalizedPassword;
+    }
+  }
+
+  if (payload.role !== undefined) {
+    normalizedPayload.role = normalizeProfileRole(payload.role);
+  }
+
+  if (payload.is_active !== undefined) {
+    normalizedPayload.is_active = toBooleanInt(Boolean(payload.is_active));
+  }
+
+  return normalizedPayload;
+}
+
 function buildQueryFilters(baseSql, filters = {}) {
   const conditions = [];
   const params = [];
@@ -561,6 +654,20 @@ async function getEmployeeById(id) {
 async function getScheduleById(id) {
   const rows = await getScheduleRows({ });
   return rows.find((row) => row.id === id) || null;
+}
+
+async function getUserById(id) {
+  const row = await get(
+    `
+      select p.id, p.full_name, p.role, p.is_active, p.created_at, u.email
+      from profiles p
+      join users u on u.id = p.id
+      where p.id = ?
+    `,
+    [id],
+  );
+
+  return row ? mapProfileRow(row) : null;
 }
 
 async function replaceEmployeeSeparationRules(employeeId, restrictedEmployeeIds = [], createdBy = null) {
@@ -999,46 +1106,102 @@ app.get(
   }),
 );
 
+app.post(
+  '/api/users',
+  requireAuth,
+  requireRoles(ROLE_CAN_MANAGE.users),
+  asyncHandler(async (request, response) => {
+    const payload = normalizeCreateUserPayload(request.body);
+    const existingEmailOwner = await get('select id from users where email = ?', [payload.email]);
+
+    if (existingEmailOwner) {
+      throw createHttpError(400, 'Email user sudah digunakan.');
+    }
+
+    const userId = randomUUID();
+    const createdAt = nowIso();
+
+    await withTransaction(async () => {
+      await run(
+        'insert into users (id, email, password_hash, created_at) values (?, ?, ?, ?)',
+        [userId, payload.email, createPasswordHash(payload.password), createdAt],
+      );
+      await run(
+        'insert into profiles (id, full_name, role, is_active, created_at) values (?, ?, ?, ?, ?)',
+        [userId, payload.full_name, payload.role, payload.is_active, createdAt],
+      );
+    });
+
+    response.status(201).json(await getUserById(userId));
+  }),
+);
+
 app.patch(
   '/api/users/:id',
   requireAuth,
   requireRoles(ROLE_CAN_MANAGE.users),
   asyncHandler(async (request, response) => {
-    if (request.params.id === request.auth.user.id) {
-      throw createHttpError(400, 'Akun sendiri tidak bisa diubah dari halaman ini.');
-    }
+    const existingUser = await getUserById(request.params.id);
 
-    const payload = {};
-
-    if (request.body?.role !== undefined) {
-      payload.role = normalizeProfileRole(request.body.role);
-    }
-
-    if (request.body?.is_active !== undefined) {
-      payload.is_active = toBooleanInt(Boolean(request.body.is_active));
-    }
-
-    if (request.body?.full_name !== undefined) {
-      payload.full_name = String(request.body.full_name || '').trim();
-    }
-
-    const { clause, params } = buildUpdateClause(payload, ['role', 'is_active', 'full_name']);
-    await run(`update profiles set ${clause} where id = ?`, [...params, request.params.id]);
-    const updatedRow = await get(
-      `
-        select p.id, p.full_name, p.role, p.is_active, p.created_at, u.email
-        from profiles p
-        join users u on u.id = p.id
-        where p.id = ?
-      `,
-      [request.params.id],
-    );
-
-    if (!updatedRow) {
+    if (!existingUser) {
       throw createHttpError(404, 'User tidak ditemukan.');
     }
 
-    response.json(mapProfileRow(updatedRow));
+    const payload = normalizeUpdateUserPayload(request.body, existingUser);
+
+    if (request.params.id === request.auth.user.id && (payload.role !== undefined || payload.is_active !== undefined)) {
+      throw createHttpError(400, 'Role atau status akun sendiri tidak bisa diubah dari halaman ini.');
+    }
+
+    if (!Object.keys(payload).length) {
+      throw createHttpError(400, 'Tidak ada perubahan yang bisa disimpan.');
+    }
+
+    if (payload.email !== undefined) {
+      const existingEmailOwner = await get('select id from users where email = ?', [payload.email]);
+
+      if (existingEmailOwner && existingEmailOwner.id !== request.params.id) {
+        throw createHttpError(400, 'Email user sudah digunakan.');
+      }
+    }
+
+    await withTransaction(async () => {
+      const accountPayload = {};
+
+      if (payload.email !== undefined) {
+        accountPayload.email = payload.email;
+      }
+
+      if (payload.password !== undefined) {
+        accountPayload.password_hash = createPasswordHash(payload.password);
+      }
+
+      if (Object.keys(accountPayload).length) {
+        const { clause, params } = buildUpdateClause(accountPayload, ['email', 'password_hash']);
+        await run(`update users set ${clause} where id = ?`, [...params, request.params.id]);
+      }
+
+      const profilePayload = {};
+
+      if (payload.full_name !== undefined) {
+        profilePayload.full_name = payload.full_name;
+      }
+
+      if (payload.role !== undefined) {
+        profilePayload.role = payload.role;
+      }
+
+      if (payload.is_active !== undefined) {
+        profilePayload.is_active = payload.is_active;
+      }
+
+      if (Object.keys(profilePayload).length) {
+        const { clause, params } = buildUpdateClause(profilePayload, ['full_name', 'role', 'is_active']);
+        await run(`update profiles set ${clause} where id = ?`, [...params, request.params.id]);
+      }
+    });
+
+    response.json(await getUserById(request.params.id));
   }),
 );
 

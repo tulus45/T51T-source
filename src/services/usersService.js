@@ -1,8 +1,15 @@
-﻿import { requestJson } from './baseService';
+import { requestJson } from './baseService';
 
 export async function listProfiles() {
   return requestJson('/api/users', {
     method: 'GET',
+  });
+}
+
+export async function createUser(payload) {
+  return requestJson('/api/users', {
+    body: payload,
+    method: 'POST',
   });
 }
 

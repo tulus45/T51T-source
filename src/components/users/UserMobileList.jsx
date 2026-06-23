@@ -1,9 +1,9 @@
-﻿import Badge from '../ui/Badge';
+import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { ROLE_OPTIONS } from '../../utils/constants';
 import { formatDateTime } from '../../utils/formatters';
 
-function UserMobileList({ onRoleChange, onToggleActive, profile, savingId, users }) {
+function UserMobileList({ onEdit, onRoleChange, onToggleActive, profile, savingId, users }) {
   return (
     <div className="space-y-4 md:hidden">
       {users.map((userItem) => {
@@ -15,6 +15,7 @@ function UserMobileList({ onRoleChange, onToggleActive, profile, savingId, users
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-base font-bold text-slate-900">{userItem.full_name || 'Tanpa Nama'}</p>
+                <p className="mt-1 break-all text-sm text-slate-500">{userItem.email || '-'}</p>
                 <p className="mt-1 break-all text-xs text-slate-400">{userItem.id}</p>
               </div>
               <Badge tone={userItem.is_active ? 'green' : 'red'}>
@@ -43,22 +44,31 @@ function UserMobileList({ onRoleChange, onToggleActive, profile, savingId, users
               <p className="mt-2 text-sm font-semibold text-slate-900">{formatDateTime(userItem.created_at)}</p>
             </div>
 
-            <Button
-              className="mt-4 w-full"
-              disabled={disabled}
-              onClick={() => onToggleActive(userItem.id, userItem.is_active)}
-              variant={userItem.is_active ? 'secondary' : 'brand'}
-            >
-              {savingId === userItem.id
-                ? 'Menyimpan...'
-                : isSelf
-                  ? 'Akun aktif'
-                  : userItem.is_active
-                    ? 'Nonaktifkan User'
-                    : 'Aktifkan User'}
-            </Button>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <Button className="w-full" onClick={() => onEdit(userItem)} variant="secondary">
+                Edit User
+              </Button>
+              <Button
+                className="w-full"
+                disabled={disabled}
+                onClick={() => onToggleActive(userItem.id, userItem.is_active)}
+                variant={userItem.is_active ? 'secondary' : 'brand'}
+              >
+                {savingId === userItem.id
+                  ? 'Menyimpan...'
+                  : isSelf
+                    ? 'Akun aktif'
+                    : userItem.is_active
+                      ? 'Nonaktifkan User'
+                      : 'Aktifkan User'}
+              </Button>
+            </div>
 
-            {isSelf && <p className="mt-3 text-xs leading-5 text-slate-400">Role akun sendiri tidak bisa diubah dari halaman ini.</p>}
+            {isSelf && (
+              <p className="mt-3 text-xs leading-5 text-slate-400">
+                Role dan status akun sendiri tidak bisa diubah cepat dari kartu ini. Gunakan Edit User jika ingin mengubah nama, email, atau password akun sendiri.
+              </p>
+            )}
           </article>
         );
       })}
